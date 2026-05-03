@@ -1,13 +1,7 @@
 node_modules/
-dist/
-build/
+# dist/
+# build/
 .env
-*.log
-*.db
-*.sqlite
-*.sqlite3
-*.pem
-*.key
 .DS_Store
 .vscode/
 .idea/

@@ -1,0 +1,8 @@
+[2026-03-30T15:00:16.241Z] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
+[2026-03-30T15:02:00.847Z] [INFO] [AI] JOB_SUBMITTED: Parallel AI job 27f0ebfa-79b0-4bd1-b670-fda9ec6ad57e submitted | Details: {"clientId":2,"userId":2,"localJobId":"9c1dc9d8-0e25-4a6b-82b0-50ae8c501ade","modulesRequested":["transcription","metadata"]}
+[2026-03-30T15:02:00.857Z] [INFO] [AI] JOB_PROCESSOR: Job 27f0ebfa-79b0-4bd1-b670-fda9ec6ad57e transcribing audio | Details: {"clientId":2,"clientName":"EDM"}
+[2026-03-30T15:02:35.334Z] [INFO] [AI] JOB_PROCESSOR_DONE: Job 27f0ebfa-79b0-4bd1-b670-fda9ec6ad57e finished with status: completed | Details: {"clientId":2,"totalCost":0.043877999023437496}
+[2026-03-30T15:04:15.974Z] [INFO] [AI] JOB_SUBMITTED: Parallel AI job 3e0072db-c473-492b-8c58-593ad7c0ed51 submitted | Details: {"clientId":2,"userId":2,"localJobId":"499c5c60-72c1-4647-9447-c10be7a2d515","modulesRequested":["transcription","subtitles","metadata","ad_breaks","promo_breaks"]}
+[2026-03-30T15:04:15.979Z] [INFO] [AI] JOB_PROCESSOR: Job 3e0072db-c473-492b-8c58-593ad7c0ed51 transcribing audio | Details: {"clientId":2,"clientName":"EDM"}
+[2026-03-30T15:04:51.749Z] [INFO] [AI] JOB_PROCESSOR_DONE: Job 3e0072db-c473-492b-8c58-593ad7c0ed51 finished with status: completed | Details: {"clientId":2,"totalCost":0.0689639990234375}
+[2026-03-30T15:15:06.742Z] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)

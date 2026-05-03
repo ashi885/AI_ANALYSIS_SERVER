@@ -1,0 +1,5 @@
+[03/05/2026 07:38:38 UTC] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
+[03/05/2026 09:20:50 UTC] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
+[03/05/2026 09:22:02 UTC] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
+[03/05/2026 09:22:36 UTC] [INFO] [SYSTEM] MODULE_PRICING_SYNCED: Synced 5 module rates to pricing table for client 2
+[03/05/2026 09:22:36 UTC] [INFO] [SYSTEM] CLIENT_UPDATED: Client EDM updated | Details: {"clientId":2,"status":"active","plan":"Professional"}
