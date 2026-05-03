@@ -1,0 +1,45 @@
+{
+  "name": "cuepoint-server",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\" --kill-others",
+    "dev:server": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "dev:client": "cd client && npm run dev",
+    "build:client": "cd client && npm install --no-audit --no-fund --legacy-peer-deps && npm run build",
+    "build:server": "tsc",
+    "build": "npm run build:client && npm run build:server",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.99.1",
+    "better-sqlite3": "^12.6.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "multer": "^2.1.0",
+    "nodemailer": "^8.0.4",
+    "openai": "^6.25.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^25.3.2",
+    "@types/nodemailer": "^6.4.17",
+    "concurrently": "^9.2.1",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "glob": "^13.0.6"
+  }
+}
