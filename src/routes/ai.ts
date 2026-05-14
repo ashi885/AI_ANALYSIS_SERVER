@@ -123,6 +123,7 @@ aiRouter.post('/whisper', licenseMiddleware, upload.single('audio'), async (req:
         logger.ai('WHISPER_SUCCESS', `Transcription complete`, {
             clientId,
             clientName,
+            requestId,
             durationMs: Date.now() - startTime,
             cost: moduleCost,
             details: { duration: result.duration, segments: result.segments.length }
@@ -250,6 +251,7 @@ aiRouter.post('/openrouter', licenseMiddleware, async (req: LicensedRequest, res
         logger.ai('OPENROUTER_SUCCESS', `Analysis complete for ${moduleName}`, {
             clientId,
             clientName,
+            requestId,
             durationMs: Date.now() - startTime,
             cost: moduleCost,
             details: { model: config.api_model, tokens: usage.totalTokens }

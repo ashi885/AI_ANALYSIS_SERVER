@@ -12,6 +12,7 @@ import { licenseMiddleware, LicensedRequest, getClientModels } from '../middlewa
 import { getClientApiKey, logApiRequest, getModulePricing, deductCredits, getClientById, logClientUsage, getProviderLabels } from '../db-mgmt';
 import { OpenRouterClient } from '../lib/ai/openrouter';
 import { enqueueAIJob, getAIJob } from '../ai-queue';
+import { logger } from '../logger';
 
 export const analyzeRouter = Router();
 
@@ -296,6 +297,17 @@ function logAIRequest(params: {
         latencyMs: params.latencyMs,
         ipAddress: params.ipAddress,
         userAgent: params.userAgent
+    });
+
+    // Also log to system console/file
+    logger.api(params.direction === 'incoming' ? 'REQ_IN' : 'REQ_OUT', `${params.endpoint} [${params.moduleName || 'direct'}]`, {
+        clientId: params.clientId,
+        requestId: params.requestId,
+        model: params.model,
+        durationMs: params.latencyMs,
+        statusCode: params.responseStatus,
+        error: params.errorMessage,
+        details: params.requestBody || params.responseBody
     });
 }
 

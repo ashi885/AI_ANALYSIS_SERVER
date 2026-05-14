@@ -20,6 +20,7 @@ interface LogEntry {
   error?: string;
   durationMs?: number;
   statusCode?: number;
+  requestId?: string;
 }
 
 interface LogsManagerProps {
@@ -100,6 +101,7 @@ export const LogsManager: React.FC<LogsManagerProps> = ({ authFetch }) => {
   const [historyMode, setHistoryMode] = useState(false);
   const [clients, setClients] = useState<any[]>([]);
   const [filterClientId, setFilterClientId] = useState<string>('ALL');
+  const [filterRequestId, setFilterRequestId] = useState<string>('');
 
   const fetchClients = async () => {
     try {
@@ -139,13 +141,21 @@ export const LogsManager: React.FC<LogsManagerProps> = ({ authFetch }) => {
         url += `&clientId=${filterClientId}`;
       }
       
+      if (filterRequestId) {
+        url += `&requestId=${filterRequestId}`;
+      }
+      
       const res = await authFetch(url);
       if (res.ok) {
         const data = await res.json();
         let entries = Array.isArray(data.entries) ? data.entries : [];
         
         // Strictly enforce latest-first sorting
-        entries.sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        entries.sort((a: any, b: any) => {
+            const dateA = new Date(a.timestamp.includes(' ') && !a.timestamp.includes('T') ? a.timestamp.replace(' ', 'T') : a.timestamp);
+            const dateB = new Date(b.timestamp.includes(' ') && !b.timestamp.includes('T') ? b.timestamp.replace(' ', 'T') : b.timestamp);
+            return dateB.getTime() - dateA.getTime();
+        });
         
         setLogs(entries);
       }
@@ -161,7 +171,7 @@ export const LogsManager: React.FC<LogsManagerProps> = ({ authFetch }) => {
 
   useEffect(() => { 
     fetchLogs(selectedDate); 
-  }, [selectedDate, searchAll, filterLevel, filterCategory, filterKeyword, filterClientId, liveMode]);
+  }, [selectedDate, searchAll, filterLevel, filterCategory, filterKeyword, filterClientId, filterRequestId, liveMode]);
 
   useEffect(() => {
     if (!liveMode || loading || searchAll) return;
@@ -429,23 +439,50 @@ export const LogsManager: React.FC<LogsManagerProps> = ({ authFetch }) => {
         {/* Console Stream Area */}
         <main style={{ ...localStyles.content, backgroundColor: '#000000', borderRadius: '0' }}>
           <div style={{ padding: '20px 32px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-             <div style={{ position: 'relative' }}>
-                <Search size={16} style={{ position: 'absolute', left: '16px', top: '14px', color: COLORS.textMuted }} />
-                <input 
-                    placeholder="Search diagnostic events (Job ID, Error, Action)..." 
-                    value={filterKeyword}
-                    onChange={(e) => setFilterKeyword(e.target.value)}
-                    style={{ 
-                        ...localStyles.input, 
-                        backgroundColor: 'rgba(255,255,255,0.02)', 
-                        padding: '12px 16px 12px 48px', 
-                        border: '1px solid rgba(255,255,255,0.05)',
-                        borderRadius: '12px',
-                        fontSize: '13px',
-                        color: 'white',
-                        width: '100%'
-                    }}
-                />
+             <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{ position: 'relative', flex: 2 }}>
+                    <Search size={16} style={{ position: 'absolute', left: '16px', top: '14px', color: COLORS.textMuted }} />
+                    <input 
+                        placeholder="Search diagnostic events (Action, Message, Job ID)..." 
+                        value={filterKeyword}
+                        onChange={(e) => setFilterKeyword(e.target.value)}
+                        style={{ 
+                            ...localStyles.input, 
+                            backgroundColor: 'rgba(255,255,255,0.02)', 
+                            padding: '12px 16px 12px 48px', 
+                            border: '1px solid rgba(255,255,255,0.05)',
+                            borderRadius: '12px',
+                            fontSize: '13px',
+                            color: 'white',
+                            width: '100%'
+                        }}
+                    />
+                </div>
+                <div style={{ position: 'relative', flex: 1 }}>
+                    <Monitor size={16} style={{ position: 'absolute', left: '16px', top: '14px', color: COLORS.textMuted }} />
+                    <input 
+                        placeholder="Filter by Request ID..." 
+                        value={filterRequestId}
+                        onChange={(e) => setFilterRequestId(e.target.value)}
+                        style={{ 
+                            ...localStyles.input, 
+                            backgroundColor: 'rgba(255,255,255,0.02)', 
+                            padding: '12px 16px 12px 48px', 
+                            border: '1px solid rgba(255,255,255,0.05)',
+                            borderRadius: '12px',
+                            fontSize: '13px',
+                            color: COLORS.info,
+                            width: '100%'
+                        }}
+                    />
+                    {filterRequestId && (
+                        <XCircle 
+                            size={14} 
+                            onClick={() => setFilterRequestId('')}
+                            style={{ position: 'absolute', right: '16px', top: '15px', color: COLORS.textMuted, cursor: 'pointer' }} 
+                        />
+                    )}
+                </div>
              </div>
           </div>
 
@@ -486,7 +523,17 @@ export const LogsManager: React.FC<LogsManagerProps> = ({ authFetch }) => {
                                 className="hover:bg-white/[0.03]"
                             >
                                 <span style={{ color: COLORS.textMuted, fontWeight: 700, width: '85px', flexShrink: 0 }}>
-                                    {new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}
+                                    {(() => {
+                                        try {
+                                            const ts = log.timestamp;
+                                            // Handle "YYYY-MM-DD HH:mm:ss" format by inserting 'T'
+                                            const normalizedTs = ts.includes(' ') && !ts.includes('T') ? ts.replace(' ', 'T') : ts;
+                                            const date = new Date(normalizedTs);
+                                            return isNaN(date.getTime()) ? ts : date.toLocaleTimeString([], { hour12: false });
+                                        } catch {
+                                            return log.timestamp;
+                                        }
+                                    })()}
                                 </span>
                                 <span style={{ 
                                     color: isErr ? COLORS.error : isWarn ? COLORS.warn : (log.level === 'INFO' ? COLORS.primary : COLORS.textDim),
@@ -503,7 +550,20 @@ export const LogsManager: React.FC<LogsManagerProps> = ({ authFetch }) => {
                                     <span style={{ color: COLORS.textDim }}>{log.message}</span>
                                     {log.jobId && (
                                         <span style={{ marginLeft: '12px', fontSize: '10px', color: COLORS.primary, backgroundColor: 'rgba(16,185,129,0.1)', padding: '2px 8px', borderRadius: '4px', fontWeight: 800 }}>
-                                            ID: {log.jobId}
+                                            JOB: {log.jobId}
+                                        </span>
+                                    )}
+                                    {log.requestId && (
+                                        <span 
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setFilterRequestId(log.requestId || '');
+                                                setSearchAll(true);
+                                            }}
+                                            style={{ marginLeft: '12px', fontSize: '10px', color: COLORS.info, backgroundColor: 'rgba(59,130,246,0.1)', padding: '2px 8px', borderRadius: '4px', fontWeight: 800, cursor: 'pointer' }}
+                                            title="Click to filter by this Request ID across all logs"
+                                        >
+                                            REQ: {log.requestId}
                                         </span>
                                     )}
                                 </div>
@@ -538,7 +598,18 @@ export const LogsManager: React.FC<LogsManagerProps> = ({ authFetch }) => {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
                     <div style={{ padding: '16px', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.05)' }}>
                         <div style={{ fontSize: '9px', fontWeight: 900, color: COLORS.textMuted, marginBottom: '6px' }}>VERSIONED TIMELINE</div>
-                        <div style={{ fontSize: '13px', fontWeight: 800 }}>{new Date(selectedLog.timestamp).toLocaleString()}</div>
+                        <div style={{ fontSize: '13px', fontWeight: 800 }}>
+                            {(() => {
+                                try {
+                                    const ts = selectedLog.timestamp;
+                                    const normalizedTs = ts.includes(' ') && !ts.includes('T') ? ts.replace(' ', 'T') : ts;
+                                    const date = new Date(normalizedTs);
+                                    return isNaN(date.getTime()) ? ts : date.toLocaleString();
+                                } catch {
+                                    return selectedLog.timestamp;
+                                }
+                            })()}
+                        </div>
                     </div>
                     <div style={{ padding: '16px', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.05)' }}>
                         <div style={{ fontSize: '9px', fontWeight: 900, color: COLORS.textMuted, marginBottom: '6px' }}>LOG CHANNEL</div>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
-  Search, RefreshCcw, ChevronRight, Copy, Check, Info, XCircle, 
+  Search, RefreshCcw, ChevronRight, Copy, Check, Info, XCircle, X,
   Terminal, Clock, ExternalLink, Activity, Database, Shield, Layout,
   Cpu, Zap, Receipt, Globe, Monitor, Code, AlertTriangle
 } from 'lucide-react';
@@ -82,6 +82,20 @@ const MODULE_OPTIONS = [
     }
 ];
 
+const COLORS = {
+    bg: '#0a0a0f',
+    sidebar: '#0d0d12',
+    card: '#111118',
+    primary: '#10b981',
+    border: 'rgba(255,255,255,0.05)',
+    textMain: '#ffffff',
+    textDim: '#9ca3af',
+    textMuted: '#6b7280',
+    error: '#ef4444',
+    warn: '#f59e0b',
+    info: '#3b82f6'
+};
+
 interface Client {
     id: number;
     name: string;
@@ -157,6 +171,7 @@ const NAV_ITEMS = [
     { id: 'logging', label: 'Server Logs', icon: '📝' },
     { id: 'api-logs', label: 'API Logs', icon: '🔌' },
     { id: 'billing', label: 'Billing', icon: '💰' },
+    { id: 'provider-billing', label: 'Provider Billing', icon: '🏦' },
     { id: 'ai-jobs', label: 'AI Job Queue', icon: '🤖' },
     { id: 'license-cache', label: 'License Cache', icon: '🗂️' },
     { id: 'smtp', label: 'SMTP Settings', icon: '📧' },
@@ -192,16 +207,7 @@ class SimpleErrorBoundary extends React.Component<{ children: React.ReactNode },
     }
 }
 
-// LogsView removed in favor of LogsManager component
-
-
 function App() {
-    try {
-        console.log('[App] App function START');
-        //alert('[App] App function is running!');
-    } catch (e) {
-        console.error('[App] Error in App:', e);
-    }
     const [activeTab, setActiveTab] = useState(() => localStorage.getItem('cuepoint_admin_tab') || 'dashboard');
     
     useEffect(() => {
@@ -219,14 +225,14 @@ function App() {
     const [selectedBillingClient, setSelectedBillingClient] = useState<number | null>(null);
     const [apiKeys, setApiKeys] = useState<Record<number, any[]>>({});
     const [clientModels, setClientModels] = useState<Record<number, any[]>>({});
-    const [logs, setLogs] = useState<any[]>([]);
-    const [logsLoading, setLogsLoading] = useState(false);
     const [apiLogs, setApiLogs] = useState<any[]>([]);
     const [apiLogsLoading, setApiLogsLoading] = useState(false);
-    const [modelsLoading, setModelsLoading] = useState(false);
     const [availableModels, setAvailableModels] = useState<any[]>([]);
     const [clientCredentials, setClientCredentials] = useState<Record<number, { supabase_url: string; supabase_anon_key: string }>>({});
     const [billingSummary, setBillingSummary] = useState<any>(null);
+    const [providerBilling, setProviderBilling] = useState<any[]>([]);
+    const [providerBillingLoading, setProviderBillingLoading] = useState(false);
+    const [balanceAlerts, setBalanceAlerts] = useState<any[]>([]);
 
     // Auth state
     const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -235,81 +241,100 @@ function App() {
     const [loginEmail, setLoginEmail] = useState('');
     const [loginPassword, setLoginPassword] = useState('');
 
-    // License Cache state
-    const [cacheClients, setCacheClients] = useState<any[]>([]);
-    const [cacheLoading, setCacheLoading] = useState(false);
-    const [cacheActionLoading, setCacheActionLoading] = useState<number | null>(null);
-    const [balanceAlerts, setBalanceAlerts] = useState<any[]>([]);
-
-    // Helper to get auth headers
-    const getAuthHeaders = () => {
-        const auth = localStorage.getItem('cuepoint_admin_auth');
-        return auth ? { 'Authorization': `Basic ${auth}` } : {};
-    };
-
-    // Auth-aware fetch wrapper
     const authFetch = useCallback(async (url: string, options: RequestInit = {}): Promise<Response> => {
         const auth = localStorage.getItem('cuepoint_admin_auth');
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (auth) headers['Authorization'] = `Basic ${auth}`;
-        if (options.headers) {
-            const optHeaders = options.headers as Record<string, string>;
-            Object.assign(headers, optHeaders);
-        }
+        if (options.headers) Object.assign(headers, options.headers);
         return fetch(url, { ...options, headers });
     }, []);
 
-    useEffect(() => {
-        const fetchAlerts = async () => {
-            try {
-                const res = await authFetch('/api/mgmt/status/balance-alerts');
-                if (res.ok) {
-                    const data = await res.json();
-                    setBalanceAlerts(data.alerts || []);
-                }
-            } catch (err) {}
-        };
-        if (isAuthenticated) {
-            fetchAlerts();
-            const interval = setInterval(fetchAlerts, 300000); // 5 minutes
-            return () => clearInterval(interval);
+    const fetchProviderBilling = useCallback(async () => {
+        setProviderBillingLoading(true);
+        try {
+            const res = await authFetch('/api/mgmt/provider-billing');
+            if (res.ok) {
+                const data = await res.json();
+                setProviderBilling(data.billing || []);
+            }
+        } catch (err) {
+            console.error('Failed to fetch provider billing', err);
+        } finally {
+            setProviderBillingLoading(false);
         }
-    }, [isAuthenticated, authFetch]);
+    }, [authFetch]);
 
-    console.log('[App] Rendering, isAuthenticated:', isAuthenticated, 'authLoading:', authLoading);
+    const fetchData = useCallback(async () => {
+        setLoading(true);
+        try {
+            const [clientsRes, summaryRes, modelsRes, billingRes] = await Promise.all([
+                authFetch('/api/mgmt/clients'),
+                authFetch('/api/mgmt/summary'),
+                authFetch('/api/mgmt/available-models'),
+                authFetch('/api/mgmt/billing/summary')
+            ]);
 
-    // Show what we're about to render
-    if (authLoading) {
-        console.log('[App] About to render auth loading state');
-    } else if (!isAuthenticated) {
-        console.log('[App] About to render login form');
-    } else {
-        console.log('[App] About to render main app');
-    }
+            const clientsData = await clientsRes.json();
+            const summaryData = await summaryRes.json();
+            const modelsData = await modelsRes.json();
+            const billingData = billingRes.ok ? await billingRes.json() : null;
 
-    // Check auth on mount
+            setAvailableModels(modelsData.models || modelsData);
+            setBillingSummary(billingData);
+            setSummary(summaryData);
+
+            setClients(clientsData.map((c: Client) => ({
+                ...c,
+                status: c.status || 'active',
+                module_rates: typeof c.module_rates === 'string' ? JSON.parse(c.module_rates || '{}') : c.module_rates
+            })));
+
+            const keysData: Record<number, any[]> = {};
+            const clientModelsData: Record<number, any[]> = {};
+            const credsData: Record<number, { supabase_url: string; supabase_anon_key: string }> = {};
+
+            for (const c of clientsData) {
+                const [keysRes, modelsRes, credsRes] = await Promise.all([
+                    authFetch(`/api/mgmt/clients/${c.id}/api-keys`),
+                    authFetch(`/api/mgmt/clients/${c.id}/models`),
+                    authFetch(`/api/mgmt/clients/${c.id}/credentials`)
+                ]);
+                keysData[c.id] = await keysRes.json();
+                clientModelsData[c.id] = await modelsRes.json();
+                if (credsRes.ok) {
+                    const creds = await credsRes.json();
+                    credsData[c.id] = { supabase_url: creds.supabaseUrl || '', supabase_anon_key: creds.supabaseAnonKey || '' };
+                }
+            }
+            setApiKeys(keysData);
+            setClientModels(clientModelsData);
+            setClientCredentials(credsData);
+            
+            fetchProviderBilling();
+        } catch (err) {
+            console.error('Failed to fetch data', err);
+        } finally {
+            setLoading(false);
+        }
+    }, [authFetch, fetchProviderBilling]);
+
+    useEffect(() => {
+        if (isAuthenticated) fetchData();
+    }, [isAuthenticated, fetchData]);
+
     useEffect(() => {
         const checkAuth = async () => {
             const savedAuth = localStorage.getItem('cuepoint_admin_auth');
             if (savedAuth) {
-                try {
-                    // Decode base64 to get email:password
-                    const decoded = atob(savedAuth);
-                    const [email, password] = decoded.split(':');
-
-                    const res = await fetch('/api/mgmt/auth/login', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email, password })
-                    });
-                    if (res.ok) {
-                        setIsAuthenticated(true);
-                    } else {
-                        localStorage.removeItem('cuepoint_admin_auth');
-                    }
-                } catch (e) {
-                    localStorage.removeItem('cuepoint_admin_auth');
-                }
+                const decoded = atob(savedAuth);
+                const [email, password] = decoded.split(':');
+                const res = await fetch('/api/mgmt/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                if (res.ok) setIsAuthenticated(true);
+                else localStorage.removeItem('cuepoint_admin_auth');
             }
             setAuthLoading(false);
         };
@@ -317,535 +342,381 @@ function App() {
     }, []);
 
     const handleLogin = async () => {
-        setLoginError('');
         try {
             const res = await fetch('/api/mgmt/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: loginEmail, password: loginPassword })
             });
-
             if (res.ok) {
-                const auth = btoa(`${loginEmail}:${loginPassword}`);
-                localStorage.setItem('cuepoint_admin_auth', auth);
+                localStorage.setItem('cuepoint_admin_auth', btoa(`${loginEmail}:${loginPassword}`));
                 setIsAuthenticated(true);
-            } else {
-                setLoginError('Invalid credentials');
-            }
-        } catch (err) {
-            setLoginError('Login failed');
-        }
+            } else setLoginError('Invalid credentials');
+        } catch { setLoginError('Login failed'); }
     };
-
-    const handleLogout = () => {
-        localStorage.removeItem('cuepoint_admin_auth');
-        setIsAuthenticated(false);
-    };
-
-    const fetchData = async () => {
-        setLoading(true);
-        try {
-            console.log('[App] Fetching data...');
-            const [clientsRes, summaryRes, avRes, billingRes] = await Promise.all([
-                authFetch('/api/mgmt/clients'),
-                authFetch('/api/mgmt/summary'),
-                authFetch('/api/mgmt/available-models'),
-                authFetch('/api/mgmt/billing/summary')
-            ]);
-
-            if (!clientsRes.ok || !summaryRes.ok) {
-                console.error('[App] One or more requests failed:', clientsRes.status, summaryRes.status);
-                return;
-            }
-
-            const clientsData = await clientsRes.json();
-            const summaryData = await summaryRes.json();
-            const availableModelsData = avRes.ok ? await avRes.json() : [];
-            const billingData = billingRes.ok ? await billingRes.json() : null;
-
-            console.log('[App] Data received:', { clientsCount: clientsData.length, summary: !!summaryData, billing: !!billingData });
-            setAvailableModels(availableModelsData);
-            setBillingSummary(billingData);
-
-            if (Array.isArray(clientsData)) {
-                setClients(clientsData.map((c: Client) => ({
-                    ...c,
-                    status: c.status || 'active',
-                    module_rates: typeof c.module_rates === 'string' ? JSON.parse(c.module_rates || '{}') : c.module_rates,
-                    jobs_this_month: Math.floor(Math.random() * 500)
-                })));
-
-                // Fetch extra data for all clients
-                const keysData: Record<number, any[]> = {};
-                const modelsData: Record<number, any[]> = {};
-                const credsData: Record<number, { supabase_url: string; supabase_anon_key: string }> = {};
-
-                for (const c of clientsData) {
-                    try {
-                        const [keysRes, modelsRes, credsRes] = await Promise.all([
-                            authFetch(`/api/mgmt/clients/${c.id}/api-keys`),
-                            authFetch(`/api/mgmt/clients/${c.id}/models`),
-                            authFetch(`/api/mgmt/clients/${c.id}/credentials`)
-                        ]);
-                        if (keysRes.ok) keysData[c.id] = await keysRes.json();
-                        if (modelsRes.ok) modelsData[c.id] = await modelsRes.json();
-                        if (credsRes.ok) {
-                            const creds = await credsRes.json();
-                            credsData[c.id] = { supabase_url: creds.supabaseUrl || '', supabase_anon_key: creds.supabaseAnonKey || '' };
-                        }
-                    } catch (e) {
-                        console.error(`[App] Error fetching client ${c.id} details:`, e);
-                    }
-                }
-                setApiKeys(keysData);
-                setClientModels(modelsData);
-                setClientCredentials(credsData);
-            } else {
-                console.error('[App] clientsData is not an array:', clientsData);
-            }
-
-            setSummary(summaryData);
-        } catch (err) {
-            console.error('[App] Failed to fetch data', err);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        if (!authLoading && isAuthenticated) {
-            fetchData();
-        }
-    }, [authLoading, isAuthenticated]);
-
-    // Show login if not authenticated
-    if (authLoading) {
-        console.log('[App] Showing auth loading');
-        return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#0a0a0f', color: 'white' }}>Loading...</div>;
-    }
-
-    if (!isAuthenticated) {
-        console.log('[App] Showing login form');
-        return (
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#0a0a0f' }}>
-                <div style={{ backgroundColor: '#111118', padding: '40px', borderRadius: '16px', width: '360px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                    <div style={{ textAlign: 'center', marginBottom: '30px' }}>
-                        <div style={{ width: '60px', height: '60px', background: 'linear-gradient(135deg, #10b981, #059669)', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', fontSize: '24px' }}>⚡</div>
-                        <h1 style={{ fontSize: '24px', fontWeight: 600, color: 'white', marginBottom: '8px' }}>Cuepoint Server</h1>
-                        <p style={{ color: '#6b7280', fontSize: '14px' }}>Sign in to manage your clients</p>
-                    </div>
-                    {loginError && <div style={{ backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', padding: '10px', borderRadius: '8px', marginBottom: '16px', fontSize: '14px' }}>{loginError}</div>}
-                    <input
-                        type="text"
-                        placeholder="Email or Username"
-                        value={loginEmail}
-                        onChange={(e) => setLoginEmail(e.target.value)}
-                        style={{ ...styles.input, marginBottom: '12px' }}
-                    />
-                    <input
-                        type="password"
-                        placeholder="Password"
-                        value={loginPassword}
-                        onChange={(e) => setLoginPassword(e.target.value)}
-                        style={{ ...styles.input, marginBottom: '20px' }}
-                    />
-                    <button onClick={handleLogin} style={{ ...styles.button, width: '100%', justifyContent: 'center', padding: '12px' }}>
-                        Sign In
-                    </button>
-                </div>
-            </div>
-        );
-    }
-
-    const today = new Date().toISOString().split('T')[0];
-
-    const getClientStatus = (client: Client) => {
-        if (client.contract_end && client.contract_end < today) return 'inactive';
-        return client.status || 'active';
-    };
-
-
-    const filteredClients = clients.filter(client => {
-        const status = getClientStatus(client);
-        const matchesSearch = client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            (client.description || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-            client.api_key.toLowerCase().includes(searchQuery.toLowerCase());
-        const matchesStatus = statusFilter === 'all' || status === statusFilter;
-        return matchesSearch && matchesStatus;
-    });
 
     const handleToggleStatus = async (client: Client) => {
         setActionLoading(client.id);
         try {
-            await authFetch(`/api/mgmt/clients/${client.id}/toggle-status`, { method: 'POST' });
-            fetchData();
-        } catch (err) {
-            console.error('Failed to toggle status', err);
-        } finally {
-            setActionLoading(null);
-        }
-    };
-
-    const handleRegenerateKey = async (client: Client) => {
-        if (!confirm(`Regenerate API key for ${client.name}? This will invalidate the current key.`)) return;
-        setActionLoading(client.id);
-        try {
-            const res = await authFetch(`/api/mgmt/clients/${client.id}/regenerate-key`, { method: 'POST' });
-            const data = await res.json();
-            //  alert(`New API Key: ${data.apiKey}\n\nPlease share this with the client!`);
-            fetchData();
-        } catch (err) {
-            console.error('Failed to regenerate key', err);
-        } finally {
-            setActionLoading(null);
-        }
+            const res = await authFetch(`/api/mgmt/clients/${client.id}/toggle-status`, { method: 'POST' });
+            if (res.ok) fetchData();
+        } finally { setActionLoading(null); }
     };
 
     const handleDelete = async (client: Client) => {
-        if (!confirm(`Delete ${client.name}? This cannot be undone.`)) return;
+        if (!confirm(`Are you sure you want to delete client ${client.name}?`)) return;
         setActionLoading(client.id);
         try {
-            await authFetch(`/api/mgmt/clients/${client.id}`, { method: 'DELETE' });
-            fetchData();
+            const res = await authFetch(`/api/mgmt/clients/${client.id}`, { method: 'DELETE' });
+            if (res.ok) fetchData();
+        } finally { setActionLoading(null); }
+    };
+
+    const handleEdit = (client: Client) => {
+        setEditingClient(client);
+        setShowModal(true);
+    };
+
+    const handleSaveClient = async (data: any) => {
+        try {
+            const url = editingClient ? `/api/mgmt/clients/${editingClient.id}` : '/api/mgmt/clients';
+            const method = editingClient ? 'PUT' : 'POST';
+            const res = await authFetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (res.ok) {
+                setShowModal(false);
+                setEditingClient(null);
+                fetchData();
+            }
+        } catch (err) { console.error('Save failed', err); }
+    };
+
+    const handleRegenerateKey = async (client: Client) => {
+        if (!confirm('Regenerate API key? This will break existing integrations.')) return;
+        setActionLoading(client.id);
+        try {
+            const res = await authFetch(`/api/mgmt/clients/${client.id}/regenerate-key`, { method: 'POST' });
+            if (res.ok) fetchData();
+        } finally { setActionLoading(null); }
+    };
+
+    const handleToggleApiKey = async (keyId: number, clientId: number) => {
+        try {
+            const res = await authFetch(`/api/mgmt/api-keys/${keyId}/toggle`, { method: 'POST' });
+            if (res.ok) fetchData();
+        } catch (err) { console.error(err); }
+    };
+
+    const handleDeleteApiKey = async (keyId: number, clientId: number) => {
+        if (!confirm('Delete this API key?')) return;
+        try {
+            const res = await authFetch(`/api/mgmt/api-keys/${keyId}`, { method: 'DELETE' });
+            if (res.ok) fetchData();
+        } catch (err) { console.error(err); }
+    };
+
+    const handleAddApiKey = async (clientId: number, provider: string, apiKey: string) => {
+        try {
+            const res = await authFetch(`/api/mgmt/clients/${clientId}/api-keys`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider, apiKey })
+            });
+            if (res.ok) fetchData();
+        } catch (err) { console.error(err); }
+    };
+
+    const handleSaveModel = async (clientUUID: string, models: any[]) => {
+        try {
+            const res = await authFetch(`/api/mgmt/clients/${clientUUID}/models`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ models })
+            });
+            if (res.ok) fetchData();
+            else throw new Error('Failed to save models');
         } catch (err) {
-            console.error('Failed to delete client', err);
-        } finally {
-            setActionLoading(null);
+            console.error(err);
+            throw err;
         }
     };
 
-    const copyToClipboard = (text: string) => {
-        navigator.clipboard.writeText(text);
-        // alert('API Key copied!');
+    const handleSaveCredentials = (clientId: number, supabaseUrl: string, supabaseAnonKey: string) => {
+        setClientCredentials(prev => ({
+            ...prev,
+            [clientId]: { supabase_url: supabaseUrl, supabase_anon_key: supabaseAnonKey }
+        }));
     };
 
-    console.log('[App] About to render main UI, clients length:', clients.length);
+    const getStatus = (client: Client) => {
+        if (client.status === 'inactive') return 'inactive';
+        const end = client.contract_end ? new Date(client.contract_end) : null;
+        if (end && end < new Date()) return 'expired';
+        return 'active';
+    };
+
+    const onCopy = (text: string) => {
+        navigator.clipboard.writeText(text);
+    };
+
+    const fetchApiLogs = useCallback(async () => {
+        setApiLogsLoading(true);
+        try {
+            const res = await authFetch('/api/mgmt/api-logs');
+            if (res.ok) {
+                const data = await res.json();
+                setApiLogs(data.logs || data);
+            }
+        } catch (err) {
+            console.error('Failed to fetch API logs', err);
+        } finally {
+            setApiLogsLoading(false);
+        }
+    }, [authFetch]);
+
+    useEffect(() => {
+        if (activeTab === 'api-logs') fetchApiLogs();
+    }, [activeTab, fetchApiLogs]);
+
+    if (authLoading) return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#0a0a0f', color: 'white' }}>Loading...</div>;
+
+    if (!isAuthenticated) return (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#0a0a0f' }}>
+            <div style={{ backgroundColor: '#111118', padding: '40px', borderRadius: '16px', width: '360px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                <h1 style={{ color: 'white', marginBottom: '20px' }}>Cuepoint Admin</h1>
+                {loginError && <div style={{ color: '#ef4444', marginBottom: '10px' }}>{loginError}</div>}
+                <input type="text" placeholder="Email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} style={{ ...styles.input, marginBottom: '10px' }} />
+                <input type="password" placeholder="Password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} style={{ ...styles.input, marginBottom: '20px' }} />
+                <button onClick={handleLogin} style={{ ...styles.button, width: '100%' }}>Sign In</button>
+            </div>
+        </div>
+    );
+
+    const filteredClients = clients.filter(c => {
+        const matchesSearch = (c.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || (c.api_key || '').toLowerCase().includes(searchQuery.toLowerCase());
+        const matchesStatus = statusFilter === 'all' || getStatus(c) === statusFilter;
+        return matchesSearch && matchesStatus;
+    });
+
     return (
         <div style={styles.container}>
             <aside style={styles.sidebar}>
                 <div style={styles.sidebarLogo}>
-                    <div style={styles.logoIcon}><span style={{ fontSize: '20px' }}>🛡️</span></div>
-                    <div>
-                        <div style={{ fontSize: '10px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Cuepoint</div>
-                        <div style={{ fontSize: '15px', fontWeight: 600 }}>Control Center</div>
-                    </div>
+                    <div style={styles.logoIcon}>🛡️</div>
+                    <div><div style={{ fontSize: '10px', color: '#6b7280' }}>CUEPOINT</div><div style={{ fontWeight: 600 }}>Admin</div></div>
                 </div>
-
-                <nav style={{ flex: 1 }}>
+                <nav style={{ flex: 1, overflowY: 'auto' }}>
                     {NAV_ITEMS.map(item => (
                         <div key={item.id} onClick={() => setActiveTab(item.id)} style={{ ...styles.navItem, ...(activeTab === item.id ? styles.navItemActive : {}) }}>
                             <span>{item.icon}</span><span>{item.label}</span>
                         </div>
                     ))}
                 </nav>
-
-                <div style={{ padding: '12px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '10px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'linear-gradient(135deg, #8b5cf6, #6d28d9)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold' }}>A</div>
-                        <div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>Admin</div>
-                            <div style={{ fontSize: '10px', color: '#6b7280' }}>Super Admin</div>
-                        </div>
-                    </div>
-                </div>
             </aside>
-
             <main style={styles.main}>
                 <header style={styles.header}>
-                    <div>
-                        <h1 style={{ fontSize: '18px', fontWeight: 600, textTransform: 'capitalize' }}>
-                            {activeTab === 'logging' ? 'System Activity Logs' : activeTab.replace('&', ' ')}
-                        </h1>
-                        <p style={{ fontSize: '12px', color: '#6b7280' }}>
-                            {activeTab === 'logging' ? 'Real-time monitoring & audit trail' : 'Manage your Cuepoint instances'}
-                        </p>
-                    </div>
+                    <h1 style={{ fontSize: '18px', textTransform: 'capitalize' }}>{activeTab.replace('-', ' ')}</h1>
                     <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                        <span style={{ fontSize: '12px', color: '#6b7280' }}>{loginEmail}</span>
-                        <button onClick={handleLogout} style={{ ...styles.buttonSecondary, fontSize: '12px' }}>Logout</button>
-                        <button style={{ ...styles.buttonSecondary }}>🔔</button>
-                        {activeTab === 'clients' && (
-                            <button onClick={() => { setEditingClient(null); setShowModal(true); }} style={styles.button}>
-                                <span>+</span><span>New Client</span>
-                            </button>
-                        )}
+                        {activeTab === 'clients' && <button onClick={() => { setEditingClient(null); setShowModal(true); }} style={styles.button}>+ New Client</button>}
+                        <button onClick={() => { localStorage.removeItem('cuepoint_admin_auth'); window.location.reload(); }} style={styles.buttonSecondary}>Logout</button>
                     </div>
                 </header>
-
                 <div style={styles.content}>
-                    {balanceAlerts.length > 0 && (
-                        <div style={{ marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                            {balanceAlerts.map((alert, i) => (
-                                <div key={i} style={{ 
-                                    backgroundColor: 'rgba(239, 68, 68, 0.1)', 
-                                    border: '1px solid rgba(239, 68, 68, 0.2)', 
-                                    borderRadius: '12px', 
-                                    padding: '12px 20px', 
-                                    display: 'flex', 
-                                    alignItems: 'center', 
-                                    gap: '12px',
-                                    animation: 'slideIn 0.3s ease-out'
-                                }}>
-                                    <AlertTriangle size={18} color="#ef4444" />
-                                    <div style={{ flex: 1 }}>
-                                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#ef4444' }}>Low Balance Alert: {alert.clientName}</div>
-                                        <div style={{ fontSize: '12px', color: '#9ca3af' }}>{alert.message}</div>
-                                    </div>
-                                    <button 
-                                        onClick={() => {
-                                            const client = clients.find(c => c.id === alert.clientId);
-                                            if (client) { setEditingClient(client); setShowModal(true); }
-                                        }}
-                                        style={{ ...styles.buttonSecondary, fontSize: '11px', padding: '4px 10px' }}
-                                    >
-                                        Recharge
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    )}
                     {activeTab === 'dashboard' && <DashboardView summary={summary} clients={clients} loading={loading} />}
-                    {activeTab === 'clients' && <ClientsView
-                        clients={filteredClients}
-                        loading={loading}
-                        statusFilter={statusFilter}
-                        setStatusFilter={setStatusFilter}
-                        searchQuery={searchQuery}
-                        setSearchQuery={setSearchQuery}
-                        onEdit={(c: Client) => { setEditingClient(c); setShowModal(true); }}
-                        onToggleStatus={handleToggleStatus}
-                        onRegenerateKey={handleRegenerateKey}
-                        onDelete={handleDelete}
-                        getStatus={getClientStatus}
-                        onCopy={copyToClipboard}
-                        actionLoading={actionLoading}
-                    />}
-                    {activeTab === 'configuration' && <ConfigView
-                        clients={clients}
-                        apiKeys={apiKeys}
-                        clientModels={clientModels}
-                        availableModels={availableModels}
-                        loading={loading || modelsLoading}
-                        onRefresh={async () => {
-                            console.log('[Config] Refreshing data...');
-                            setLoading(true);
-                            try {
-                                const [clientsRes, summaryRes, modelsRes] = await Promise.all([
-                                    authFetch('/api/mgmt/clients'),
-                                    authFetch('/api/mgmt/summary'),
-                                    authFetch('/api/mgmt/available-models')
-                                ]);
-                                console.log('[Config] clientsRes status:', clientsRes.status);
-                                console.log('[Config] summaryRes status:', summaryRes.status);
-                                console.log('[Config] modelsRes status:', modelsRes.status);
-
-                                const clientsData = await clientsRes.json();
-                                console.log('[Config] clientsData:', clientsData);
-                                const summaryData = await summaryRes.json();
-                                console.log('[Config] summaryData:', summaryData);
-                                const modelsData = await modelsRes.json();
-                                console.log('[Config] modelsData:', modelsData);
-                                setAvailableModels(modelsData);
-
-                                setClients(clientsData.map((c: Client) => ({
-                                    ...c,
-                                    status: c.status || 'active',
-                                    module_rates: typeof c.module_rates === 'string' ? JSON.parse(c.module_rates || '{}') : c.module_rates,
-                                    jobs_this_month: Math.floor(Math.random() * 500)
-                                })));
-
-                                setSummary(summaryData);
-
-                                const keysData: Record<number, any[]> = {};
-                                const clientModelsData: Record<number, any[]> = {};
-                                const credsData: Record<number, { supabase_url: string; supabase_anon_key: string }> = {};
-                                for (const c of clientsData) {
-                                    console.log(`[Config] Fetching data for client ${c.id}...`);
-                                    try {
-                                        const [keysRes, modelsRes, credsRes] = await Promise.all([
-                                            authFetch(`/api/mgmt/clients/${c.id}/api-keys`),
-                                            authFetch(`/api/mgmt/clients/${c.id}/models`),
-                                            authFetch(`/api/mgmt/clients/${c.id}/credentials`)
-                                        ]);
-                                        console.log(`[Config] Client ${c.id} keys status:`, keysRes.status);
-                                        console.log(`[Config] Client ${c.id} models status:`, modelsRes.status);
-                                        keysData[c.id] = await keysRes.json();
-                                        clientModelsData[c.id] = await modelsRes.json();
-                                        if (credsRes.ok) {
-                                            const creds = await credsRes.json();
-                                            credsData[c.id] = { supabase_url: creds.supabaseUrl || '', supabase_anon_key: creds.supabaseAnonKey || '' };
-                                        }
-                                        console.log(`[Config] Client ${c.id} keys:`, keysData[c.id]);
-                                        console.log(`[Config] Client ${c.id} models:`, clientModelsData[c.id]);
-                                    } catch (e) {
-                                        console.error(`[Config] Error fetching client ${c.id} data:`, e);
-                                    }
-                                }
-                                console.log('[Config] Final keysData:', keysData);
-                                console.log('[Config] Final clientModelsData:', clientModelsData);
-                                console.log('[Config] Final credsData:', credsData);
-                                setApiKeys(keysData);
-                                setClientModels(clientModelsData);
-                                setClientCredentials(credsData);
-                            } catch (err) {
-                                console.error('Failed to fetch data', err);
-                            } finally {
-                                setLoading(false);
-                                setModelsLoading(false);
-                            }
-                        }}
-                        onAddApiKey={async (clientId: number, provider: string, apiKey: string) => {
-                            await authFetch(`/api/mgmt/clients/${clientId}/api-keys`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ provider, api_key: apiKey })
-                            });
-                            // Refresh keys
-                            const res = await authFetch(`/api/mgmt/clients/${clientId}/api-keys`);
-                            const data = await res.json();
-                            setApiKeys({ ...apiKeys, [clientId]: data });
-                        }}
-                        onToggleApiKey={async (keyId: number, clientId: number) => {
-                            await authFetch(`/api/mgmt/api-keys/${keyId}/toggle`, { method: 'POST' });
-                            // Refresh keys
-                            const res = await authFetch(`/api/mgmt/clients/${clientId}/api-keys`);
-                            const data = await res.json();
-                            setApiKeys({ ...apiKeys, [clientId]: data });
-                        }}
-                        onDeleteApiKey={async (keyId: number, clientId: number) => {
-                            if (!confirm('Delete this API key?')) return;
-                            await authFetch(`/api/mgmt/api-keys/${keyId}`, { method: 'DELETE' });
-                            // Refresh keys
-                            const res = await authFetch(`/api/mgmt/clients/${clientId}/api-keys`);
-                            const data = await res.json();
-                            setApiKeys({ ...apiKeys, [clientId]: data });
-                        }}
-                        onSaveModel={async (clientUUID: string, modelsArray: any[]) => {
-                            await authFetch(`/api/mgmt/clients/${clientUUID}/models`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ models: modelsArray })
-                            });
-                            const modelsData: Record<number, any[]> = {};
-                            for (const c of clients) {
-                                try {
-                                    const res = await authFetch(`/api/mgmt/clients/${c.id}/models`);
-                                    modelsData[c.id] = await res.json();
-                                } catch { }
-                            }
-                            setClientModels(modelsData);
-                        }}
-                        clientCredentials={clientCredentials}
-                        onSaveCredentials={(clientId: number, supabaseUrl: string, supabaseAnonKey: string) => {
-                            setClientCredentials({ ...clientCredentials, [clientId]: { supabase_url: supabaseUrl, supabase_anon_key: supabaseAnonKey } });
-                        }}
-                    />}
-                    {activeTab === 'logging' && (
-                        <div style={{ position: 'absolute', inset: '64px 0 0 260px', zIndex: 10, background: '#0a0a0f', display: 'flex', flexDirection: 'column' }}>
-                            <LogsManager authFetch={authFetch} />
-                        </div>
-                    )}
-                    {activeTab === 'api-logs' && <ApiLogsView
-                        logs={apiLogs}
-                        loading={apiLogsLoading}
-                        clients={clients}
-                        onRefresh={async () => {
-                            setApiLogsLoading(true);
-                            try {
-                                const res = await authFetch('/api/mgmt/client-usage-logs?limit=200');
-                                const data = await res.json();
-                                setApiLogs(data || []);
-                            } catch (err) {
-                                console.error('Failed to fetch API logs', err);
-                            } finally {
-                                setApiLogsLoading(false);
-                            }
-                        }}
-                    />}
-                    {activeTab === 'settings' && <SettingsView
-                        availableModels={availableModels}
-                        authFetch={authFetch}
-                        onRefresh={async () => {
-                            try {
-                                const res = await authFetch('/api/mgmt/models');
-                                setAvailableModels(await res.json());
-                            } catch (err) {
-                                console.error('Failed to refresh models', err);
-                            }
-                        }}
-                    />}
-                    {activeTab === 'billing' && <BillingView 
-                        clients={clients} 
-                        getStatus={getClientStatus} 
-                        selectedBillingClient={selectedBillingClient} 
-                        setSelectedBillingClient={setSelectedBillingClient} 
-                        billingData={billingSummary}
-                    />}
-                    {activeTab === 'license-cache' && (
-                        <LicenseCacheView
-                            authFetch={authFetch}
+                    {activeTab === 'clients' && (
+                        <ClientsView 
+                            clients={filteredClients} 
+                            loading={loading} 
+                            statusFilter={statusFilter} 
+                            setStatusFilter={setStatusFilter}
+                            searchQuery={searchQuery}
+                            setSearchQuery={setSearchQuery}
+                            onEdit={handleEdit}
+                            onToggleStatus={handleToggleStatus}
+                            onRegenerateKey={handleRegenerateKey}
+                            onDelete={handleDelete}
+                            getStatus={getStatus}
+                            onCopy={onCopy}
+                            actionLoading={actionLoading}
                         />
                     )}
-                    {activeTab === 'smtp' && (
-                        <SmtpSettingsView authFetch={authFetch} />
+                    {activeTab === 'configuration' && (
+                        <ConfigView 
+                            clients={clients}
+                            apiKeys={apiKeys}
+                            clientModels={clientModels}
+                            availableModels={availableModels}
+                            loading={loading}
+                            onRefresh={fetchData}
+                            onAddApiKey={handleAddApiKey}
+                            onToggleApiKey={handleToggleApiKey}
+                            onDeleteApiKey={handleDeleteApiKey}
+                            onSaveModel={handleSaveModel}
+                            clientCredentials={clientCredentials}
+                            onSaveCredentials={handleSaveCredentials}
+                        />
                     )}
-                    {activeTab === 'sync-queue' && (
-                        <SyncQueueView authFetch={authFetch} />
+                    {activeTab === 'settings' && (
+                        <SettingsView 
+                            availableModels={availableModels} 
+                            clientModels={Object.values(clientModels).flat()}
+                            clients={clients}
+                            authFetch={authFetch} 
+                            onRefresh={fetchData} 
+                        />
                     )}
-                    {activeTab === 'ai-jobs' && (
-                        <AiJobsView authFetch={authFetch} clients={clients} />
-                    )}
+                    {activeTab === 'logging' && <LogsManager authFetch={authFetch} />}
+                    {activeTab === 'api-logs' && <ApiLogsView logs={apiLogs} loading={apiLogsLoading} clients={clients} onRefresh={fetchApiLogs} />}
+                    {activeTab === 'billing' && <BillingView clients={clients} getStatus={getStatus} selectedBillingClient={selectedBillingClient} setSelectedBillingClient={setSelectedBillingClient} billingData={billingSummary} />}
+                    {activeTab === 'provider-billing' && <ProviderBillingView billing={providerBilling} loading={providerBillingLoading} onRefresh={fetchProviderBilling} />}
+                    {activeTab === 'ai-jobs' && <AiJobsView authFetch={authFetch} />}
+                    {activeTab === 'license-cache' && <LicenseCacheView authFetch={authFetch} />}
+                    {activeTab === 'smtp' && <SmtpSettingsView authFetch={authFetch} />}
+                    {activeTab === 'sync-queue' && <SyncQueueView authFetch={authFetch} />}
                 </div>
-
-                {showModal && (
-                    <ClientModal
-                        client={editingClient}
-                        authFetch={authFetch}
-                        onClose={() => setShowModal(false)}
-                        onSave={async (data: any) => {
-                            if (editingClient) {
-                                await authFetch(`/api/mgmt/clients/${editingClient.id}`, {
-                                    method: 'PUT',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(data)
-                                });
-                            } else {
-                                await authFetch('/api/mgmt/clients', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(data)
-                                });
-                            }
-                            setShowModal(false);
-                            fetchData();
-                        }}
-                    />
-                )}
             </main>
+            {showModal && <ClientModal client={editingClient} authFetch={authFetch} onClose={() => setShowModal(false)} onSave={handleSaveClient} />}
         </div>
     );
 }
 
 function PrivateValue({ value, isCurrency = true }: { value: any, isCurrency?: boolean }) {
     const [visible, setVisible] = useState(false);
-    
     return (
         <span 
             onClick={() => setVisible(!visible)} 
-            style={{ 
-                cursor: 'pointer', 
-                backgroundColor: visible ? 'transparent' : 'rgba(255,255,255,0.05)',
-                padding: visible ? '0' : '2px 8px',
-                borderRadius: '4px',
-                filter: visible ? 'none' : 'blur(4px)',
-                transition: 'all 0.2s'
-            }}
-            title="Click to reveal"
+            style={{ cursor: 'pointer', padding: visible ? '0' : '2px 8px', borderRadius: '4px', backgroundColor: visible ? 'transparent' : 'rgba(255,255,255,0.05)' }}
         >
             {visible ? (isCurrency ? `$${value}` : value) : '****'}
         </span>
     );
 }
+
+const ProviderBillingView = ({ billing, loading, onRefresh }: { billing: any[], loading: boolean, onRefresh: () => void }) => {
+    return (
+        <div style={{ animation: 'fadeIn 0.3s ease-out' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                <div>
+                    <h2 style={{ fontSize: '20px', fontWeight: 600, marginBottom: '4px' }}>AI Provider Account Balances</h2>
+                    <p style={{ fontSize: '13px', color: '#6b7280' }}>Real-time credits and balance information for all configured API keys.</p>
+                </div>
+                <button 
+                    onClick={onRefresh} 
+                    disabled={loading}
+                    style={{ ...styles.buttonSecondary, display: 'flex', alignItems: 'center', gap: '8px' }}
+                >
+                    <RefreshCcw size={14} className={loading ? 'animate-spin' : ''} />
+                    <span>Refresh All</span>
+                </button>
+            </div>
+
+            {loading && billing.length === 0 ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '100px' }}>
+                    <div className="animate-spin" style={{ width: '40px', height: '40px', border: '3px solid rgba(16,185,129,0.2)', borderTopColor: '#10b981', borderRadius: '50%' }}></div>
+                </div>
+            ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: '20px' }}>
+                    {billing.map((item, idx) => (
+                        <div key={idx} style={{ ...styles.card, margin: 0, position: 'relative', overflow: 'hidden' }}>
+                            <div style={{ 
+                                position: 'absolute', 
+                                top: '-20px', 
+                                right: '-20px', 
+                                width: '100px', 
+                                height: '100px', 
+                                background: item.provider === 'openai' ? 'linear-gradient(135deg, rgba(16,185,129,0.1), transparent)' : 'linear-gradient(135deg, rgba(59,130,246,0.1), transparent)',
+                                borderRadius: '50%',
+                                zIndex: 0
+                            }} />
+
+                            <div style={{ position: 'relative', zIndex: 1 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+                                    <div>
+                                        <div style={{ fontSize: '12px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>{item.client_name}</div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span style={{ fontSize: '18px', fontWeight: 700 }}>{item.provider === 'openai' ? 'OpenAI' : 'OpenRouter'}</span>
+                                            <span style={{ fontSize: '12px', color: '#6b7280', fontFamily: 'monospace', backgroundColor: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }}>
+                                                {item.api_key_prefix}...
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div style={{ 
+                                        padding: '8px', 
+                                        borderRadius: '10px', 
+                                        backgroundColor: item.provider === 'openai' ? 'rgba(16,185,129,0.1)' : 'rgba(59,130,246,0.1)',
+                                        color: item.provider === 'openai' ? '#10b981' : '#3b82f6'
+                                    }}>
+                                        {item.provider === 'openai' ? <Zap size={20} /> : <Cpu size={20} />}
+                                    </div>
+                                </div>
+
+                                {item.error ? (
+                                    <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '10px', padding: '12px', display: 'flex', gap: '10px', alignItems: 'center' }}>
+                                        <XCircle size={16} color="#ef4444" />
+                                        <div style={{ fontSize: '12px', color: '#ef4444' }}>{item.error}</div>
+                                    </div>
+                                ) : (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span style={{ fontSize: '12px', color: '#6b7280' }}>Usage (MTD)</span>
+                                                <span style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>
+                                                    ${(item.balance?.usage_this_month || 0).toFixed(3)}
+                                                </span>
+                                            </div>
+                                            
+                                            {item.provider === 'openrouter' && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', padding: '10px', backgroundColor: 'rgba(16,185,129,0.05)', borderRadius: '8px' }}>
+                                                    <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 500 }}>Account Balance</span>
+                                                    <span style={{ fontSize: '16px', fontWeight: 700, color: '#10b981' }}>
+                                                        <PrivateValue value={(item.balance?.total_credits || 0).toFixed(2)} />
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: '#6b7280', textAlign: 'right' }}>
+                                            {item.provider === 'openai' ? 'Local usage logs estimate' : 'Real-time provider balance'}
+                                        </div>
+
+                                        <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.05)', width: '100%' }} />
+
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <div style={{ fontSize: '11px', color: '#6b7280' }}>
+                                                Last updated: {new Date(item.last_updated).toLocaleTimeString()}
+                                            </div>
+                                            <a 
+                                                href={item.provider === 'openai' ? 'https://platform.openai.com/usage' : 'https://openrouter.ai/activity'} 
+                                                target="_blank" 
+                                                rel="noreferrer"
+                                                style={{ fontSize: '11px', color: '#10b981', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                            >
+                                                <span>View Source</span>
+                                                <ExternalLink size={10} />
+                                            </a>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+            
+            {billing.length === 0 && !loading && (
+                <div style={{ textAlign: 'center', padding: '100px', backgroundColor: '#111118', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <Database size={48} color="#374151" style={{ marginBottom: '16px' }} />
+                    <div style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px' }}>No API Keys Found</div>
+                    <p style={{ fontSize: '14px', color: '#6b7280', maxWidth: '400px', margin: '0 auto' }}>
+                        Add API keys in the Client Configuration section to monitor provider balances here.
+                    </p>
+                </div>
+            )}
+        </div>
+    );
+};
 
 export default function WrappedApp() {
     return (
@@ -1634,16 +1505,11 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
         billing_type: client?.billing_type || 'PER_REQUEST',
         credits: client?.credits || 0,
         maintenance_mode: client?.maintenance_mode || 0,
-        module_rates: moduleRates
+        module_rates: moduleRates,
+        provider_bal_openai: client?.provider_bal_openai || 0,
+        provider_bal_openrouter: client?.provider_bal_openrouter || 0,
+        provider_warn_threshold: client?.provider_warn_threshold || 25.0,
     });
-    
-    const [plan, setPlan] = useState(client?.plan || 'Professional');
-    const [billing_type, setBillingType] = useState(client?.billing_type || 'PER_REQUEST');
-    const [credits, setCredits] = useState(client?.credits || 0);
-    const [provider_bal_openai, setProviderBalOpenai] = useState(client?.provider_bal_openai || 0);
-    const [provider_bal_openrouter, setProviderBalOpenrouter] = useState(client?.provider_bal_openrouter || 0);
-    const [provider_warn_threshold, setProviderWarnThreshold] = useState(client?.provider_warn_threshold || 25.0);
-    const [description, setDescription] = useState(client?.description || '');
 
     // Auto-generate short_code if empty and name is typed
     useEffect(() => {
@@ -1774,8 +1640,8 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
                         <input 
                             type="number" 
                             step="0.01"
-                            value={credits} 
-                            onChange={(e) => setCredits(parseFloat(e.target.value))} 
+                            value={formData.credits} 
+                            onChange={(e) => setFormData({ ...formData, credits: parseFloat(e.target.value) })} 
                             style={styles.input} 
                         />
                     </div>
@@ -1792,8 +1658,8 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
                             <label style={{ display: 'block', fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>OpenAI/Whisper Balance ($)</label>
                             <input
                                 type="number" step="0.01" min="0"
-                                value={isNaN(provider_bal_openai) ? '' : provider_bal_openai}
-                                onChange={(e) => setProviderBalOpenai(e.target.value === '' ? 0 : parseFloat(e.target.value))}
+                                value={isNaN(formData.provider_bal_openai) ? '' : formData.provider_bal_openai}
+                                onChange={(e) => setFormData({ ...formData, provider_bal_openai: e.target.value === '' ? 0 : parseFloat(e.target.value) })}
                                 style={{ ...styles.input, borderColor: 'rgba(16,185,129,0.3)' }}
                                 placeholder="e.g. 10.00"
                             />
@@ -1802,8 +1668,8 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
                             <label style={{ display: 'block', fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>OpenRouter Balance ($)</label>
                             <input
                                 type="number" step="0.01" min="0"
-                                value={isNaN(provider_bal_openrouter) ? '' : provider_bal_openrouter}
-                                onChange={(e) => setProviderBalOpenrouter(e.target.value === '' ? 0 : parseFloat(e.target.value))}
+                                value={isNaN(formData.provider_bal_openrouter) ? '' : formData.provider_bal_openrouter}
+                                onChange={(e) => setFormData({ ...formData, provider_bal_openrouter: e.target.value === '' ? 0 : parseFloat(e.target.value) })}
                                 style={{ ...styles.input, borderColor: 'rgba(16,185,129,0.3)' }}
                                 placeholder="e.g. 10.00"
                             />
@@ -1813,8 +1679,8 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
                         <label style={{ display: 'block', fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>Low Balance Warning Threshold ($)</label>
                         <input
                             type="number" step="0.01" min="0"
-                            value={isNaN(provider_warn_threshold) ? '' : provider_warn_threshold}
-                            onChange={(e) => setProviderWarnThreshold(e.target.value === '' ? 25 : parseFloat(e.target.value))}
+                            value={isNaN(formData.provider_warn_threshold) ? '' : formData.provider_warn_threshold}
+                            onChange={(e) => setFormData({ ...formData, provider_warn_threshold: e.target.value === '' ? 25 : parseFloat(e.target.value) })}
                             style={styles.input}
                             placeholder="e.g. 2.50"
                         />
@@ -1871,13 +1737,10 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
                     <button onClick={onClose} style={{ ...styles.buttonSecondary }}>Cancel</button>
                     <button onClick={() => onSave({
                         ...formData,
-                        plan,
-                        billing_type,
-                        credits: isNaN(credits) ? 0 : credits,
-                        provider_bal_openai: isNaN(provider_bal_openai) ? 0 : provider_bal_openai,
-                        provider_bal_openrouter: isNaN(provider_bal_openrouter) ? 0 : provider_bal_openrouter,
-                        provider_warn_threshold: isNaN(provider_warn_threshold) ? 2.5 : provider_warn_threshold,
-                        description
+                        credits: isNaN(formData.credits) ? 0 : formData.credits,
+                        provider_bal_openai: isNaN(formData.provider_bal_openai) ? 0 : formData.provider_bal_openai,
+                        provider_bal_openrouter: isNaN(formData.provider_bal_openrouter) ? 0 : formData.provider_bal_openrouter,
+                        provider_warn_threshold: isNaN(formData.provider_warn_threshold) ? 2.5 : formData.provider_warn_threshold
                     })} style={{ ...styles.button }} disabled={!formData.name}>{client ? 'Save Changes' : 'Create Client'}</button>
                 </div>
             </div>
@@ -2557,24 +2420,108 @@ function ConfigView({ clients, apiKeys, clientModels, availableModels, loading, 
     );
 }
 
-function SettingsView({ availableModels, authFetch, onRefresh }: {
+function SettingsView({ availableModels, clientModels, clients, authFetch, onRefresh }: {
     availableModels: any[];
+    clientModels: any[];
+    clients: any[];
     authFetch: (url: string, options?: RequestInit) => Promise<Response>;
     onRefresh: () => void;
 }) {
     const [showAddForm, setShowAddForm] = useState(false);
     const [newModel, setNewModel] = useState({ module_id: 'subtitles', provider: 'openrouter', model_id: '', display_name: '' });
     const [loading, setLoading] = useState(false);
+    const [modelSearch, setModelSearch] = useState('');
+    const [tableFilter, setTableFilter] = useState('');
+    const [message, setMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+
+    const [discoveredModels, setDiscoveredModels] = useState<any[]>([]);
+    const [discovering, setDiscovering] = useState(false);
+
+    const triggerDiscovery = useCallback(async (force = false) => {
+        const providersRequiringDiscovery = ['openrouter', 'anthropic', 'google', 'deepseek', 'meta'];
+        if (providersRequiringDiscovery.includes(newModel.provider) && (discoveredModels.length === 0 || force)) {
+            setDiscovering(true);
+            try {
+                const res = await authFetch('/api/mgmt/available-models/discover-openrouter');
+                const data = await res.json();
+                console.log('[UI] Discovery response:', data);
+                if (data.success) {
+                    setDiscoveredModels(data.models || []);
+                    console.log(`[UI] Set ${data.models?.length} discovered models`);
+                }
+            } catch (err) {
+                console.error('Discovery failed:', err);
+            } finally {
+                setDiscovering(false);
+            }
+        }
+    }, [newModel.provider, discoveredModels.length, authFetch]);
+
+    useEffect(() => {
+        triggerDiscovery();
+    }, [newModel.provider, triggerDiscovery]);
 
     const modules = [...new Set(availableModels.map((m: any) => m.module_id))];
     
     // Get unique providers from available models
     const providers = [...new Set(availableModels.map((m: any) => m.provider))];
     
-    // Get models for the selected provider
-    const providerModels = newModel.provider 
-        ? availableModels.filter((m: any) => m.provider === newModel.provider)
-        : [];
+    const providerModels = useMemo(() => {
+        if (!newModel.provider) return [];
+        
+        const results: any[] = [];
+        const seen = new Set();
+        
+        // 1. Add models already in the DB for this provider
+        availableModels.forEach((m: any) => {
+            if (m.provider === newModel.provider && !seen.has(m.model_id)) {
+                seen.add(m.model_id);
+                results.push({
+                    model_id: m.model_id,
+                    display_name: m.display_name,
+                    provider: m.provider,
+                    already_added: true
+                });
+            }
+        });
+
+        // 2. Add discovered models from OpenRouter
+        // If provider is 'openrouter', show all. Otherwise filter by provider name prefix
+        let targetPrefix = newModel.provider;
+        if (targetPrefix === 'openrouter') targetPrefix = '';
+        
+        discoveredModels.forEach((dm: any) => {
+            if (!seen.has(dm.id)) {
+                if (!targetPrefix || dm.id.startsWith(targetPrefix + '/')) {
+                    seen.add(dm.id);
+                    results.push({
+                        model_id: dm.id,
+                        display_name: dm.name,
+                        provider: 'openrouter',
+                        is_discovered: true,
+                        already_added: false
+                    });
+                }
+            }
+        });
+
+        console.log(`[UI] Provider: ${newModel.provider}, DB Models: ${results.filter(r => r.already_added).length}, Discovered: ${results.filter(r => !r.already_added).length}`);
+
+        return results.sort((a, b) => {
+            if (a.already_added && !b.already_added) return 1;
+            if (!a.already_added && b.already_added) return -1;
+            return a.display_name.localeCompare(b.display_name);
+        });
+    }, [availableModels, newModel.provider, discoveredModels]);
+
+    const filteredProviderModels = useMemo(() => {
+        if (!modelSearch) return providerModels;
+        const search = modelSearch.toLowerCase();
+        return providerModels.filter(m => 
+            m.display_name.toLowerCase().includes(search) || 
+            m.model_id.toLowerCase().includes(search)
+        );
+    }, [providerModels, modelSearch]);
 
     const moduleNames: Record<string, string> = {
         transcription: 'Transcription',
@@ -2590,32 +2537,59 @@ function SettingsView({ availableModels, authFetch, onRefresh }: {
     const handleAddModel = async () => {
         if (!newModel.model_id || !newModel.display_name) return;
         setLoading(true);
+        setMessage(null);
         try {
-            await authFetch('/api/mgmt/models', {
+            const res = await authFetch('/api/mgmt/available-models', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(newModel)
             });
-            setNewModel({ module_id: 'subtitles', provider: 'openrouter', model_id: '', display_name: '' });
-            setShowAddForm(false);
-            onRefresh();
+            if (res.ok) {
+                setMessage({ text: 'Model added successfully', type: 'success' });
+                setNewModel({ module_id: 'subtitles', provider: 'openrouter', model_id: '', display_name: '' });
+                setShowAddForm(false);
+                onRefresh();
+            } else {
+                const data = await res.json();
+                setMessage({ text: data.error || 'Failed to add model', type: 'error' });
+            }
         } catch (err) {
             console.error('Failed to add model', err);
+            setMessage({ text: 'Network error while adding model', type: 'error' });
         } finally {
             setLoading(false);
         }
     };
 
     const handleToggle = async (id: number) => {
-        await authFetch(`/api/mgmt/models/${id}/toggle`, { method: 'POST' });
+        await authFetch(`/api/mgmt/available-models/${id}/toggle`, { method: 'POST' });
         onRefresh();
     };
 
     const handleDelete = async (id: number) => {
-        if (!confirm('Delete this model?')) return;
-        await authFetch(`/api/mgmt/models/${id}`, { method: 'DELETE' });
-        onRefresh();
+        if (!confirm('Are you absolutely sure? Deleting a model that is currently in use by a client will break their AI functionality.')) return;
+        setLoading(true);
+        try {
+            const res = await authFetch(`/api/mgmt/available-models/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                setMessage({ text: 'Model deleted successfully', type: 'success' });
+                onRefresh();
+            } else {
+                const data = await res.json();
+                setMessage({ text: data.error || 'Failed to delete model', type: 'error' });
+            }
+        } catch (err) {
+            setMessage({ text: 'Error deleting model', type: 'error' });
+        } finally {
+            setLoading(false);
+        }
     };
+
+    const getModelAssignments = (modelId: string, provider: string) => {
+        return clientModels.filter(cm => cm.api_model === modelId && cm.api_provider === provider);
+    };
+
+    const [activeSubTab, setActiveSubTab] = useState<'assignments' | 'catalog'>('assignments');
 
     return (
         <div>
@@ -2629,6 +2603,7 @@ function SettingsView({ availableModels, authFetch, onRefresh }: {
                                     const res = await authFetch('/api/mgmt/available-models/sync-openrouter', { method: 'POST' });
                                     const data = await res.json();
                                     alert(data.message || `Synced ${data.added} models`);
+                                    setDiscoveredModels([]); // Clear to force re-fetch on next select
                                     onRefresh();
                                 } catch (err) {
                                     alert('Failed to sync models');
@@ -2644,6 +2619,58 @@ function SettingsView({ availableModels, authFetch, onRefresh }: {
                     </button>
                 </div>
             </div>
+
+            {/* Sub-Tabs */}
+            <div style={{ display: 'flex', gap: '24px', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                <button 
+                    onClick={() => setActiveSubTab('assignments')}
+                    style={{ 
+                        padding: '12px 4px', 
+                        fontSize: '14px', 
+                        fontWeight: 500, 
+                        background: 'none', 
+                        border: 'none', 
+                        cursor: 'pointer',
+                        color: activeSubTab === 'assignments' ? '#10b981' : '#6b7280',
+                        borderBottom: activeSubTab === 'assignments' ? '2px solid #10b981' : '2px solid transparent'
+                    }}
+                >
+                    📋 Active Assignments
+                </button>
+                <button 
+                    onClick={() => setActiveSubTab('catalog')}
+                    style={{ 
+                        padding: '12px 4px', 
+                        fontSize: '14px', 
+                        fontWeight: 500, 
+                        background: 'none', 
+                        border: 'none', 
+                        cursor: 'pointer',
+                        color: activeSubTab === 'catalog' ? '#10b981' : '#6b7280',
+                        borderBottom: activeSubTab === 'catalog' ? '2px solid #10b981' : '2px solid transparent'
+                    }}
+                >
+                    📂 Full Catalog ({availableModels.length})
+                </button>
+            </div>
+
+            {/* Feedback Message */}
+            {message && (
+                <div style={{
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    marginBottom: '20px',
+                    backgroundColor: message.type === 'success' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+                    color: message.type === 'success' ? '#10b981' : '#ef4444',
+                    border: `1px solid ${message.type === 'success' ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                }}>
+                    <span>{message.text}</span>
+                    <button onClick={() => setMessage(null)} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer' }}><X size={14} /></button>
+                </div>
+            )}
 
             {showAddForm && (
                 <div style={{ ...styles.card, marginBottom: '20px' }}>
@@ -2667,36 +2694,77 @@ function SettingsView({ availableModels, authFetch, onRefresh }: {
                                 style={{ ...styles.input, width: '100%', color: '#fff' }}
                             >
                                 <option value="openai" style={{ backgroundColor: '#0a0a0f' }}>OpenAI</option>
-                                <option value="openrouter" style={{ backgroundColor: '#0a0a0f' }}>OpenRouter</option>
+                                <option value="openrouter" style={{ backgroundColor: '#0a0a0f' }}>OpenRouter (All)</option>
+                                <option value="anthropic" style={{ backgroundColor: '#0a0a0f' }}>Anthropic</option>
+                                <option value="google" style={{ backgroundColor: '#0a0a0f' }}>Google / Gemini</option>
+                                <option value="deepseek" style={{ backgroundColor: '#0a0a0f' }}>DeepSeek</option>
+                                <option value="meta" style={{ backgroundColor: '#0a0a0f' }}>Meta / Llama</option>
                             </select>
                         </div>
                         <div>
                             <label style={{ display: 'block', fontSize: '12px', marginBottom: '6px', color: '#9ca3af' }}>Model ID</label>
-                            {providerModels.length > 0 ? (
-                                <select
-                                    value={newModel.model_id}
-                                    onChange={(e) => {
-                                        const selected = providerModels.find((m: any) => m.model_id === e.target.value);
-                                        setNewModel({ ...newModel, model_id: e.target.value, display_name: selected?.display_name || '' });
-                                    }}
-                                    style={{ ...styles.input, width: '100%', color: '#fff' }}
-                                >
-                                    <option value="" style={{ backgroundColor: '#0a0a0f' }}>Select a model...</option>
-                                    {providerModels.map((m: any) => (
-                                        <option key={m.model_id} value={m.model_id} style={{ backgroundColor: '#0a0a0f' }}>
-                                            {m.display_name} ({m.model_id})
-                                        </option>
-                                    ))}
-                                </select>
-                            ) : (
-                                <input
+                            
+                            {/* Search Filter for Adding */}
+                            <div style={{ marginBottom: '8px', position: 'relative' }}>
+                                <input 
                                     type="text"
-                                    value={newModel.model_id}
-                                    onChange={(e) => setNewModel({ ...newModel, model_id: e.target.value })}
-                                    placeholder="e.g. anthropic/claude-3.5-sonnet"
-                                    style={{ ...styles.input, width: '100%', color: '#fff' }}
+                                    placeholder="Search catalog..."
+                                    value={modelSearch}
+                                    onChange={(e) => setModelSearch(e.target.value)}
+                                    style={{ 
+                                        ...styles.input, 
+                                        width: '100%', 
+                                        fontSize: '11px', 
+                                        padding: '8px 12px',
+                                        borderColor: modelSearch ? COLORS.primary : 'rgba(255,255,255,0.1)',
+                                        backgroundColor: 'rgba(255,255,255,0.02)'
+                                    }}
                                 />
-                            )}
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flex: 1 }}>
+                                    <select
+                                        value={newModel.model_id}
+                                        onChange={(e) => {
+                                            if (e.target.value === 'CUSTOM') {
+                                                setNewModel({ ...newModel, model_id: '', display_name: '' });
+                                            } else {
+                                                const selected = providerModels.find((m: any) => m.model_id === e.target.value);
+                                                setNewModel({ ...newModel, model_id: e.target.value, display_name: selected?.display_name || '' });
+                                            }
+                                        }}
+                                        style={{ ...styles.input, flex: 1, color: '#fff' }}
+                                    >
+                                        <option value="" style={{ backgroundColor: '#0a0a0f' }}>
+                                            {discovering ? 'Searching OpenRouter...' : `Select a model (${filteredProviderModels.length})...`}
+                                        </option>
+                                        <option value="CUSTOM" style={{ backgroundColor: '#0a0a0f', color: COLORS.primary }}>+ Enter Custom ID...</option>
+                                        {filteredProviderModels.map((m: any) => (
+                                            <option key={m.model_id} value={m.model_id} style={{ backgroundColor: '#0a0a0f', color: m.already_added ? COLORS.textMuted : '#fff' }}>
+                                                {m.display_name} {m.already_added ? '(Added)' : (m.is_discovered ? '(New)' : '')}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <button 
+                                        onClick={() => triggerDiscovery(true)}
+                                        disabled={discovering}
+                                        title="Refresh catalog"
+                                        style={{ padding: '8px', backgroundColor: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', cursor: 'pointer' }}
+                                    >
+                                        <RefreshCcw size={16} className={discovering ? 'animate-spin' : ''} color={COLORS.primary} />
+                                    </button>
+                                </div>
+                                {(!newModel.model_id || !providerModels.find(m => m.model_id === newModel.model_id)) && (
+                                    <input
+                                        type="text"
+                                        value={newModel.model_id}
+                                        onChange={(e) => setNewModel({ ...newModel, model_id: e.target.value })}
+                                        placeholder="Enter ID..."
+                                        style={{ ...styles.input, flex: 1, color: COLORS.primary, borderColor: COLORS.primary }}
+                                    />
+                                )}
+                            </div>
                         </div>
                         <div>
                             <label style={{ display: 'block', fontSize: '12px', marginBottom: '6px', color: '#9ca3af' }}>Display Name</label>
@@ -2719,6 +2787,20 @@ function SettingsView({ availableModels, authFetch, onRefresh }: {
             )}
 
             <div style={styles.card}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ fontSize: '14px', fontWeight: 600 }}>Available Models Table</h3>
+                    <div style={{ position: 'relative' }}>
+                        <Search size={14} style={{ position: 'absolute', left: '10px', top: '10px', color: '#6b7280' }} />
+                        <input 
+                            type="text"
+                            placeholder="Filter table models..."
+                            value={tableFilter}
+                            onChange={(e) => setTableFilter(e.target.value)}
+                            style={{ ...styles.input, paddingLeft: '32px', width: '250px', fontSize: '12px' }}
+                        />
+                    </div>
+                </div>
+
                 <table style={styles.table}>
                     <thead>
                         <tr>
@@ -2726,48 +2808,85 @@ function SettingsView({ availableModels, authFetch, onRefresh }: {
                             <th style={styles.th}>Provider</th>
                             <th style={styles.th}>Model ID</th>
                             <th style={styles.th}>Display Name</th>
+                            <th style={styles.th}>Assignments</th>
                             <th style={styles.th}>Status</th>
                             <th style={styles.th}>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {availableModels.map((model: any) => (
-                            <tr key={model.id}>
-                                <td style={styles.td}>{moduleNames[model.module_id] || model.module_id}</td>
-                                <td style={styles.td}>
-                                    <span style={{
-                                        padding: '4px 8px',
-                                        borderRadius: '4px',
-                                        fontSize: '11px',
-                                        backgroundColor: model.provider === 'openai' ? 'rgba(59,130,246,0.2)' : 'rgba(168,85,247,0.2)',
-                                        color: model.provider === 'openai' ? '#3b82f6' : '#a855f7'
-                                    }}>
-                                        {model.provider.toUpperCase()}
-                                    </span>
-                                </td>
-                                <td style={styles.td}><code style={{ fontSize: '11px' }}>{model.model_id}</code></td>
-                                <td style={styles.td}>{model.display_name}</td>
-                                <td style={styles.td}>
-                                    <span style={{
-                                        ...styles.badge,
-                                        backgroundColor: model.is_active ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)',
-                                        color: model.is_active ? '#10b981' : '#f59e0b'
-                                    }}>
-                                        {model.is_active ? 'Active' : 'Inactive'}
-                                    </span>
-                                </td>
-                                <td style={styles.td}>
-                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                        <button onClick={() => handleToggle(model.id)} style={{ ...styles.buttonSecondary, padding: '4px 8px', fontSize: '11px' }}>
-                                            {model.is_active ? 'Disable' : 'Enable'}
-                                        </button>
-                                        <button onClick={() => handleDelete(model.id)} style={{ ...styles.buttonSecondary, padding: '4px 8px', fontSize: '11px', color: '#ef4444', borderColor: '#ef4444' }}>
-                                            Delete
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
-                        ))}
+                        {availableModels
+                            .filter((m: any) => {
+                                const assignments = getModelAssignments(m.model_id, m.provider);
+                                if (activeSubTab === 'assignments' && assignments.length === 0) return false;
+                                
+                                const search = tableFilter.toLowerCase();
+                                return (
+                                    m.display_name.toLowerCase().includes(search) || 
+                                    m.model_id.toLowerCase().includes(search) ||
+                                    m.provider.toLowerCase().includes(search)
+                                );
+                            })
+                            .map((model: any) => {
+                                const assignments = getModelAssignments(model.model_id, model.provider);
+                                return (
+                                    <tr key={model.id}>
+                                        <td style={styles.td}>{moduleNames[model.module_id] || model.module_id}</td>
+                                        <td style={styles.td}>
+                                            <span style={{
+                                                padding: '4px 8px',
+                                                borderRadius: '4px',
+                                                fontSize: '11px',
+                                                backgroundColor: model.provider === 'openai' ? 'rgba(59,130,246,0.2)' : 'rgba(168,85,247,0.2)',
+                                                color: model.provider === 'openai' ? '#3b82f6' : '#a855f7'
+                                            }}>
+                                                {model.provider.toUpperCase()}
+                                            </span>
+                                        </td>
+                                        <td style={styles.td}><code style={{ fontSize: '11px' }}>{model.model_id}</code></td>
+                                        <td style={styles.td}>{model.display_name}</td>
+                                        <td style={styles.td}>
+                                            {assignments.length > 0 ? (
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                                    {assignments.map((a, i) => {
+                                                        const client = clients.find(c => c.id === a.client_id);
+                                                        return (
+                                                            <span key={i} style={{ fontSize: '10px', backgroundColor: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }} title={a.module_name}>
+                                                                {client?.name || `ID:${a.client_id}`}
+                                                            </span>
+                                                        );
+                                                    })}
+                                                </div>
+                                            ) : (
+                                                <span style={{ fontSize: '11px', color: '#6b7280' }}>Unassigned</span>
+                                            )}
+                                        </td>
+                                        <td style={styles.td}>
+                                            <span style={{
+                                                ...styles.badge,
+                                                backgroundColor: model.is_active ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)',
+                                                color: model.is_active ? '#10b981' : '#f59e0b'
+                                            }}>
+                                                {model.is_active ? 'Active' : 'Inactive'}
+                                            </span>
+                                        </td>
+                                        <td style={styles.td}>
+                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                <button onClick={() => handleToggle(model.id)} style={{ ...styles.buttonSecondary, padding: '4px 8px', fontSize: '11px' }}>
+                                                    {model.is_active ? 'Disable' : 'Enable'}
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleDelete(model.id)} 
+                                                    disabled={loading}
+                                                    style={{ ...styles.buttonSecondary, padding: '4px 8px', fontSize: '11px', color: '#ef4444', borderColor: '#ef4444', opacity: assignments.length > 0 ? 0.3 : 1 }}
+                                                    title={assignments.length > 0 ? "Cannot delete: This model is assigned to clients" : "Delete model"}
+                                                >
+                                                    Delete
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
                     </tbody>
                 </table>
             </div>
@@ -2926,6 +3045,7 @@ function ApiLogsView({ logs, loading, clients, onRefresh }: {
                                 <th style={{ ...styles.th, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>Activity / Timeline</th>
                                 <th style={{ ...styles.th, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>Request ID Tracking</th>
                                 <th style={{ ...styles.th, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>Parent Context</th>
+                                <th style={{ ...styles.th, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>Request Content</th>
                                 <th style={{ ...styles.th, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>Client / Module</th>
                                 <th style={{ ...styles.th, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>Provider / Status</th>
                                 <th style={{ ...styles.th, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>Cost (Billed)</th>
@@ -2947,6 +3067,7 @@ function ApiLogsView({ logs, loading, clients, onRefresh }: {
                                             transition: 'background-color 0.2s'
                                         }}
                                         className="hover:bg-white/[0.02]"
+                                        title="Click to open deep-dive diagnostic inspector for this request"
                                     >
                                         <td style={styles.td}>
                                             <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -2969,14 +3090,31 @@ function ApiLogsView({ logs, loading, clients, onRefresh }: {
                                                 </div>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                                     <Database size={12} color="#10b981" />
-                                                    <span style={{ fontSize: '10px', color: '#6b7280', fontFamily: 'monospace' }}>{log.request_id ? log.request_id.substring(0, 8) + '...' : 'ANALYSIS'}</span>
+                                                    <span style={{ fontSize: '10px', color: '#6b7280', fontFamily: 'monospace' }}>{log.request_id || 'ANALYSIS'}</span>
                                                 </div>
                                             </div>
                                         </td>
                                         <td style={styles.td}>
                                             <div style={{ display: 'flex', flexDirection: 'column' }}>
                                                 <span style={{ fontSize: '13px', fontWeight: 600 }}>{log.client_name}</span>
-                                                <span style={{ fontSize: '11px', color: '#6b7280' }}>{log.endpoint?.replace('/api/analyze', 'AI_ANALYSIS')}</span>
+                                                <span style={{ fontSize: '11px', color: '#6b7280', fontFamily: 'monospace' }} title={log.parent_job_id}>
+                                                    {log.parent_job_id ? `JOB: ${log.parent_job_id}` : 'DIRECT_API'}
+                                                </span>
+                                            </div>
+                                        </td>
+                                        <td style={styles.td}>
+                                            <div style={{ fontSize: '11px', color: COLORS.textDim, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {(() => {
+                                                    try {
+                                                        const body = typeof log.request_body === 'string' ? JSON.parse(log.request_body) : log.request_body;
+                                                        if (body?.module === 'subtitle_translation') return `Translate -> ${body.target_language || '?'}`;
+                                                        if (body?.filename) return body.filename;
+                                                        if (body?.messages) return body.messages[body.messages.length - 1]?.content?.substring(0, 50);
+                                                        return log.endpoint?.replace('/api/', '');
+                                                    } catch {
+                                                        return log.endpoint;
+                                                    }
+                                                })()}
                                             </div>
                                         </td>
                                         <td style={styles.td}>

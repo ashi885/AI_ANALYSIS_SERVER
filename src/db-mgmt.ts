@@ -1,6 +1,7 @@
 import { getDatabase, initDatabase } from './sqlite';
 export { getDatabase, initDatabase } from './sqlite';
 import crypto from 'crypto';
+import axios from 'axios';
 
 const globalFetch = fetch;
 
@@ -395,42 +396,59 @@ export async function getAvailableModels() {
     const rows = db.prepare('SELECT * FROM available_models ORDER BY module_id, display_name').all();
     return rows || [];
 }
-
 export async function fetchOpenRouterModels(apiKey: string): Promise<Array<{id: string, name: string, provider: string}>> {
+    const headers: any = {
+        'HTTP-Referer': 'https://cuepoint.production',
+        'X-Title': 'Cuepoint AI Analysis'
+    };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
     try {
-        const response = await globalFetch('https://openrouter.ai/api/v1/models', {
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'HTTP-Referer': 'https://cuepoint.production',
-                'X-Title': 'Cuepoint AI Analysis'
-            }
+        console.log('[DB] Fetching models from OpenRouter (Auth)...');
+        const response = await axios.get('https://openrouter.ai/api/v1/models', {
+            headers,
+            timeout: 10000
         });
         
-        if (!response.ok) {
-            console.error('[DB] Failed to fetch OpenRouter models:', response.status);
-            return [];
+        const data = response.data || {};
+        let models = data.data || [];
+
+        // Fallback: If for some reason the authenticated request returned empty data, 
+        // try a public request as the models endpoint is generally public.
+        if (models.length === 0) {
+            console.log('[DB] Discovery returned 0 models, trying clean public fetch...');
+            const publicRes = await axios.get('https://openrouter.ai/api/v1/models', {
+                headers: {
+                    'HTTP-Referer': 'https://cuepoint.production',
+                    'X-Title': 'Cuepoint AI Analysis'
+                },
+                timeout: 10000
+            });
+            models = publicRes.data?.data || [];
         }
-        const data = await response.json() as any;
-        const models = data.data || [];
         
-        // Filter to popular chat models
-        const popularProviders = ['anthropic', 'openai', 'google', 'meta', 'mistralai', 'deepseek'];
-        
-        return models
+        const filteredModels = models
             .filter((m: any) => {
-                const provider = m.id.split('/')[0];
-                return popularProviders.includes(provider) && m.id.includes('chat');
+                const id = m.id.toLowerCase();
+                return !id.includes(':') && !id.includes('free');
             })
-            .slice(0, 50)
+            .slice(0, 1000)
             .map((m: any) => ({
                 id: m.id,
                 name: m.name || m.id,
-                provider: m.id.split('/')[0]
+                provider: 'openrouter'
             }));
+
+        console.log(`[DB] OpenRouter API returned ${models.length} raw models. Filtered to ${filteredModels.length}.`);
+        return filteredModels;
     } catch (error: any) {
-        console.error('[DB] Error fetching OpenRouter models:', error.message);
+        console.error('[DB] OpenRouter Fetch Error:', error.response?.data || error.message);
         return [];
     }
+}
+
+export async function discoverOpenRouterModels(apiKey: string): Promise<any[]> {
+    return await fetchOpenRouterModels(apiKey);
 }
 
 export async function syncOpenRouterModelsToDb(apiKey: string): Promise<number> {
@@ -442,9 +460,13 @@ export async function syncOpenRouterModelsToDb(apiKey: string): Promise<number> 
     
     for (const model of models) {
         // Map to existing modules (metadata, ad_breaks, promo_breaks, etc.)
-        const modules = ['metadata', 'ad_breaks', 'promo_breaks'];
+        const modules = ['metadata', 'ad_breaks', 'promo_breaks', 'subtitles', 'subtitle_translation'];
         
         for (const moduleId of modules) {
+            // Only sync popular/important models automatically to avoid clutter
+            const isVeryPopular = model.id.includes('gpt-4o') || model.id.includes('claude-3-5') || model.id.includes('claude-3-7') || model.id.includes('gemini-1.5-pro');
+            if (!isVeryPopular) continue;
+
             // Check if already exists
             const existing = db.prepare(
                 'SELECT id FROM available_models WHERE module_id = ? AND model_id = ?'
@@ -454,7 +476,7 @@ export async function syncOpenRouterModelsToDb(apiKey: string): Promise<number> 
                 db.prepare(`
                     INSERT INTO available_models (module_id, provider, model_id, display_name, is_active)
                     VALUES (?, ?, ?, ?, 1)
-                `).run(moduleId, model.provider, model.id, model.name);
+                `).run(moduleId, 'openrouter', model.id, model.name);
                 count++;
             }
         }
@@ -1518,6 +1540,76 @@ export async function saveClientCredentials(clientId: number, credentials: { sup
     } catch (e) {
         console.error('[DB] Error saving client credentials:', e);
         return false;
+    }
+}
+
+/**
+ * Get provider billing information (balances, credits, etc.)
+ */
+export async function getProviderBilling() {
+    try {
+        const db = getDatabase();
+        const apiKeys = db.prepare(`
+            SELECT ak.*, c.name as client_name 
+            FROM client_api_keys ak
+            JOIN clients c ON ak.client_id = c.id
+            WHERE ak.is_active = 1
+        `).all() as any[];
+
+        const results = [];
+
+        for (const key of apiKeys) {
+            let balanceData: any = null;
+            let error: string | null = null;
+
+            try {
+                const decryptedKey = decrypt(key.api_key);
+                
+                // 1. Fetch local usage from logs (Source of Truth for per-client cost)
+                const usage = db.prepare(`
+                    SELECT SUM(cost_usd) as total_cost 
+                    FROM api_request_logs 
+                    WHERE client_id = ? AND provider = ?
+                    AND created_at >= date('now', 'start of month')
+                `).get(key.client_id, key.provider) as any;
+                
+                const localUsage = usage?.total_cost || 0;
+
+                // 2. Fetch external balance if applicable
+                if (key.provider === 'openrouter') {
+                    const res = await axios.get('https://openrouter.ai/api/v1/credits', {
+                        headers: { 'Authorization': `Bearer ${decryptedKey}` },
+                        timeout: 5000
+                    });
+                    const extData = res.data?.data || res.data;
+                    balanceData = { 
+                        ...extData, 
+                        usage_this_month: localUsage 
+                    };
+                } else if (key.provider === 'openai') {
+                    balanceData = { 
+                        usage_this_month: localUsage 
+                    };
+                }
+            } catch (e: any) {
+                error = e.response?.data?.error?.message || e.message;
+            }
+
+            results.push({
+                client_id: key.client_id,
+                client_name: key.client_name,
+                provider: key.provider,
+                api_key_prefix: key.api_key_prefix,
+                balance: balanceData,
+                error: error,
+                last_updated: new Date().toISOString()
+            });
+        }
+
+        return results;
+    } catch (e) {
+        console.error('[DB] Error getting provider billing:', e);
+        return [];
     }
 }
 

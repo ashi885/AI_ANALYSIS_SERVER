@@ -62,6 +62,7 @@ export interface LogEntry {
     details?: any;
     durationMs?: number;
     statusCode?: number;
+    requestId?: string;
     error?: string;
 }
 
@@ -82,6 +83,7 @@ function formatEntry(entry: LogEntry & { displayTimestamp?: string }, forConsole
     if (entry.jobId) extra += ` [Job:${entry.jobId}]`;
     if (entry.durationMs) extra += ` [${entry.durationMs}ms]`;
     if (entry.statusCode) extra += ` [${entry.statusCode}]`;
+    if (entry.requestId) extra += ` [ReqID:${entry.requestId}]`;
     
     let line = `${base}${extra} ${entry.action}: ${entry.message}`;
     
@@ -102,6 +104,14 @@ function writeLog(entry: LogEntry) {
     const displayTimestamp = formatTimestamp(new Date(entry.timestamp));
     const entryWithDisplay = { ...entry, displayTimestamp };
     
+    // Automatically extract requestId from details if present to improve log consistency
+    if (!entry.requestId && entry.details?.requestId) {
+        entry.requestId = entry.details.requestId;
+    }
+    if (!entry.requestId && entry.details?.id && (entry.category === 'AI' || entry.category === 'API')) {
+        entry.requestId = entry.details.id;
+    }
+
     const logLineFile = formatEntry(entryWithDisplay, false);
     const logFile = path.join(LOG_DIR, getLogFilename(new Date(entry.timestamp)));
     
@@ -227,6 +237,7 @@ export function getLogsForDate(date: string, filters?: {
     clientId?: number;
     jobId?: number;
     keyword?: string;
+    requestId?: string;
 }): LogEntry[] {
     const logFile = path.join(LOG_DIR, `server-${date}.log`);
     
@@ -249,6 +260,7 @@ export function getLogsForDate(date: string, filters?: {
                 if (filters.category && entry.category !== filters.category) continue;
                 if (filters.clientId && entry.clientId !== filters.clientId) continue;
                 if (filters.jobId && entry.jobId !== filters.jobId) continue;
+                if (filters.requestId && !entry.requestId?.toLowerCase().includes(filters.requestId.toLowerCase())) continue;
                 if (filters.keyword) {
                     const kw = filters.keyword.toLowerCase();
                     if (!entry.message.toLowerCase().includes(kw) && 
@@ -299,6 +311,9 @@ function parseLogLine(line: string): LogEntry | null {
     
     const statusMatch = rest.match(/\[(\d{3})\]/);
     if (statusMatch) entry.statusCode = parseInt(statusMatch[1]);
+
+    const reqIdMatch = rest.match(/\[ReqID:(.+?)\]/);
+    if (reqIdMatch) entry.requestId = reqIdMatch[1];
     
     const parts = rest.split(/: (.+)$/);
     if (parts.length >= 2) {
@@ -307,6 +322,19 @@ function parseLogLine(line: string): LogEntry | null {
         
         const errorMatch = rest.match(/Error: (.+?)(?: \||$)/);
         if (errorMatch) entry.error = errorMatch[1];
+
+        const detailsMatch = rest.match(/\| Details: ({.+})$/);
+        if (detailsMatch) {
+            try {
+                entry.details = JSON.parse(detailsMatch[1]);
+                // If we didn't get a requestId from the [ReqID:...] tag, try details
+                if (!entry.requestId && entry.details.requestId) {
+                    entry.requestId = entry.details.requestId;
+                }
+            } catch (e) {
+                // Ignore parse errors
+            }
+        }
     }
     
     return entry;
@@ -328,6 +356,7 @@ export function searchAllLogs(filters: {
     keyword?: string;
     clientId?: number;
     jobId?: number;
+    requestId?: string;
     limit?: number;
 }): LogEntry[] {
     const dates = getAvailableLogDates();

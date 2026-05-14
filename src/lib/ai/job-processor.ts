@@ -30,22 +30,24 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
         logger.info('AI', 'AUTO_OUTPUT_ENABLED', `Job ${jobId} will output results to ${outputDir}`, { originalFilename });
     }
 
-    // Helper to safely write to output directory
-    const saveToOutput = (moduleName: string, data: any, extension: string = 'json', customSuffix?: string) => {
+    // Helper to safely write to output directory using templates
+    const saveToOutput = async (moduleName: string, data: any, extension: string = 'json', customSuffix?: string) => {
         if (!outputDir || !fs.existsSync(outputDir)) return;
         
         try {
+            const { renderTemplate } = await import('../utils/template-engine');
+            const { content, extension: finalExt } = await renderTemplate(moduleName, data, clientId);
+
             const baseName = originalFilename.includes('.') 
                 ? originalFilename.substring(0, originalFilename.lastIndexOf('.')) 
                 : originalFilename;
             
             const suffix = customSuffix || (moduleName === 'subtitles' ? '' : `_${moduleName}`);
-            const fileName = `${baseName}${suffix}.${extension}`;
+            const fileName = `${baseName}${suffix}.${finalExt}`;
             const fullPath = path.join(outputDir, fileName);
             
-            const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
             fs.writeFileSync(fullPath, content);
-            logger.info('AI', 'AUTO_OUTPUT_SAVED', `Saved ${moduleName} output to ${fullPath}`);
+            logger.info('AI', 'AUTO_OUTPUT_SAVED', `Saved ${moduleName} output to ${fullPath} (Template: ${finalExt})`);
         } catch (e: any) {
             logger.error('AI', 'AUTO_OUTPUT_FAILED', `Failed to save ${moduleName} output: ${e.message}`);
         }
@@ -157,7 +159,13 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
             successfulModules.push('transcription');
             
             // Auto-output transcription
-            saveToOutput('transcription', transcriptionResult.text, 'txt');
+            await saveToOutput('transcription', transcriptionResult.text, 'txt');
+
+            // ✅ Sync progress after transcription
+            db.prepare('UPDATE ai_jobs SET result_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(
+                JSON.stringify(resultData), jobId
+            );
+            logger.info('AI', 'JOB_PROGRESS_SYNC', `Synced transcription for Job ${jobId}`);
         } else if (existingResultsMap['transcription']) {
             logger.ai('AI_TRANSCRIPTION_SKIPPED', `Job ${jobId} using existing transcription`, { clientId, jobId });
             resultData.push({
@@ -272,8 +280,14 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
 
             // Auto-output subtitles (SRT)
             if (resultData[resultData.length - 1].resultData.srt) {
-                saveToOutput('subtitles', resultData[resultData.length - 1].resultData.srt, 'srt');
+                await saveToOutput('subtitles', resultData[resultData.length - 1].resultData.srt, 'srt');
             }
+
+            // ✅ Sync progress after subtitles
+            db.prepare('UPDATE ai_jobs SET result_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(
+                JSON.stringify(resultData), jobId
+            );
+            logger.info('AI', 'JOB_PROGRESS_SYNC', `Synced subtitles for Job ${jobId}`);
         } else if (existingResultsMap['subtitles']) {
             resultData.push({
                 moduleName: 'subtitles',
@@ -523,8 +537,8 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                                 });
 
                                 if (allTranslatedSegments.length > 0) {
-                                    saveToOutput('subtitle_translation', formatAsSRT(allTranslatedSegments), 'srt', `_${normalizedTarget}`);
-                                    saveToOutput('subtitle_translation', formatAsVTT(allTranslatedSegments), 'vtt', `_${normalizedTarget}`);
+                                    await saveToOutput('subtitle_translation', formatAsSRT(allTranslatedSegments), 'srt', `_${normalizedTarget}`);
+                                    await saveToOutput('subtitle_translation', formatAsVTT(allTranslatedSegments), 'vtt', `_${normalizedTarget}`);
                                 }
 
                             } catch (langErr: any) {
@@ -683,7 +697,7 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                             'metadata': '_metadata',
                             'summary': '_summary'
                         };
-                        saveToOutput(moduleName, finalResultData, 'json', moduleSuffixMap[moduleName]);
+                        await saveToOutput(moduleName, finalResultData, 'json', moduleSuffixMap[moduleName]);
 
                         return {
                             module_name: moduleName,

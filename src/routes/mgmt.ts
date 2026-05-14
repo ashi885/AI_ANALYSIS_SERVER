@@ -11,11 +11,12 @@ import {
     getAvailableModels, addModel, toggleModel, deleteModel,
     getProviderLabels, setProviderLabel, setClientModelsBulk,
     toggleApiKey, deleteApiKey, updateWatcherHeartbeat,
-    getClientModels, syncOpenRouterModelsToDb, addCredits, getCreditTransactions,
+    getClientModels, syncOpenRouterModelsToDb, discoverOpenRouterModels, addCredits, getCreditTransactions,
     getSystemTimezone, setSystemTimezone, getClientTimezone, setClientTimezone, getSystemSettings,
     getClientModuleSettings, saveClientModuleSetting,
     saveClientAIExample, getClientAIExamples,
-    getClientCredentials, saveClientCredentials, getUserSetting
+    getClientCredentials, saveClientCredentials, getUserSetting,
+    getProviderBilling
 } from '../db-mgmt';
 import { getLicenseFromCache, refreshLicenseInCache, invalidateLicenseInCache, getLicenseCacheDetails } from '../license-cache';
 import { processAiJob } from '../lib/ai/job-processor';
@@ -979,6 +980,39 @@ mgmtRouter.post('/available-models', requireAdminAuth, async (req: Request, res:
     res.json({ success });
 });
 
+mgmtRouter.get('/available-models/discover-openrouter', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const db = getDatabase();
+        const apiKeyRow = db.prepare(`
+            SELECT ak.api_key FROM client_api_keys ak
+            JOIN clients c ON ak.client_id = c.id
+            WHERE ak.provider = 'openrouter' AND ak.is_active = 1
+            LIMIT 1
+        `).get() as { api_key: string } | undefined;
+        
+        const models = await discoverOpenRouterModels(apiKeyRow?.api_key || '');
+        console.log(`[MGMT] Discovered ${models.length} models for OpenRouter discovery request`);
+        res.json({ success: true, models });
+    } catch (error: any) {
+        console.error('[Discovery] Failed to fetch models:', error);
+        res.status(500).json({ error: 'Failed to discover models' });
+    }
+});
+
+/**
+ * GET /api/mgmt/provider-billing
+ * Fetch billing/credits info from external providers
+ */
+mgmtRouter.get('/provider-billing', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const billing = await getProviderBilling();
+        res.json({ success: true, billing });
+    } catch (error: any) {
+        console.error('[Billing] Failed to fetch provider billing:', error);
+        res.status(500).json({ error: 'Failed to fetch provider billing' });
+    }
+});
+
 mgmtRouter.post('/available-models/sync-openrouter', requireAdminAuth, async (req: Request, res: Response) => {
     try {
         const db = getDatabase();
@@ -1726,35 +1760,16 @@ mgmtRouter.post('/jobs/:id/export-result', requireAuth, async (req: Request, res
             return res.status(400).json({ error: 'Output directory not configured' });
         }
 
-        let content: string;
-        let ext = 'json';
-        let suffix = `_${moduleName}`;
+        const { renderTemplate } = await import('../utils/template-engine');
+        const { content, extension } = await renderTemplate(moduleName, data, job.client_id);
 
-        if (moduleName === 'subtitles') {
-            const formatAsSRT = (subs: any[]) => {
-                return subs.map((s, i) => {
-                    const formatTime = (sec: number) => {
-                        const hrs = Math.floor(sec / 3600);
-                        const mins = Math.floor((sec % 3600) / 60);
-                        const secs = Math.floor(sec % 60);
-                        const ms = Math.floor((sec % 1) * 1000);
-                        return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
-                    };
-                    return `${i + 1}\n${formatTime(s.start)} --> ${formatTime(s.end)}\n${s.text}\n`;
-                }).join('\n');
-            };
-            content = formatAsSRT(data.subtitles || []);
-            ext = 'srt';
-            suffix = '';
-        } else {
-            content = JSON.stringify(data, null, 2);
-            if (moduleName === 'ad_breaks') suffix = '_adbreak';
-            if (moduleName === 'promo_breaks') suffix = '_promo';
-            if (moduleName === 'metadata') suffix = '_metadata';
-        }
+        let suffix = `_${moduleName}`;
+        if (moduleName === 'ad_breaks') suffix = '_adbreak';
+        if (moduleName === 'promo_breaks') suffix = '_promo';
+        if (moduleName === 'metadata') suffix = '_metadata';
 
         const baseName = job.filename.includes('.') ? job.filename.substring(0, job.filename.lastIndexOf('.')) : job.filename;
-        const fullPath = path.join(outputDir, `${baseName}${suffix}.${ext}`);
+        const fullPath = path.join(outputDir, `${baseName}${suffix}.${extension}`);
         
         fs.writeFileSync(fullPath, content);
         res.json({ success: true, path: fullPath });
@@ -1769,31 +1784,19 @@ mgmtRouter.post('/jobs/:id/export-result', requireAuth, async (req: Request, res
  */
 mgmtRouter.post('/jobs/:id/download-result', requireAuth, async (req: Request, res: Response) => {
     try {
-        const { moduleName, data } = req.body;
-        let content: string;
-        let contentType: string;
+        const { id } = req.params;
+        const db = getDatabase();
+        const job = db.prepare('SELECT client_id FROM ai_jobs WHERE id = ?').get(id) as any;
+        
+        const { renderTemplate } = await import('../utils/template-engine');
+        const { content, extension } = await renderTemplate(moduleName, data, job?.client_id || 1);
 
-        if (moduleName === 'subtitles') {
-            const formatAsSRT = (subs: any[]) => {
-                return subs.map((s, i) => {
-                    const formatTime = (sec: number) => {
-                        const hrs = Math.floor(sec / 3600);
-                        const mins = Math.floor((sec % 3600) / 60);
-                        const secs = Math.floor(sec % 60);
-                        const ms = Math.floor((sec % 1) * 1000);
-                        return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
-                    };
-                    return `${i + 1}\n${formatTime(s.start)} --> ${formatTime(s.end)}\n${s.text}\n`;
-                }).join('\n');
-            };
-            content = formatAsSRT(data.subtitles || []);
-            contentType = 'text/plain';
-        } else {
-            content = JSON.stringify(data, null, 2);
-            contentType = 'application/json';
-        }
+        let contentType = 'application/json';
+        if (extension === 'xml') contentType = 'application/xml';
+        if (extension === 'srt' || extension === 'txt') contentType = 'text/plain';
 
         res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="result.${extension}"`);
         res.send(content);
     } catch (err: any) {
         res.status(500).json({ error: err.message });

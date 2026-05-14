@@ -7,6 +7,7 @@ logsRouter.get('/search-all', (req: Request, res: Response) => {
     const level = req.query.level as string;
     const category = req.query.category as string;
     const keyword = req.query.keyword as string;
+    const requestId = req.query.requestId as string;
     const clientId = req.query.clientId ? parseInt(req.query.clientId as string) : undefined;
     const jobId = req.query.jobId ? parseInt(req.query.jobId as string) : undefined;
 
@@ -15,7 +16,8 @@ logsRouter.get('/search-all', (req: Request, res: Response) => {
         category: category !== 'ALL' ? category : undefined,
         keyword: keyword || undefined,
         clientId,
-        jobId
+        jobId,
+        requestId
     };
 
     const entries = searchAllLogs(filters);
@@ -37,6 +39,7 @@ logsRouter.get('/', (req: Request, res: Response) => {
     const category = req.query.category as string;
     const clientId = req.query.clientId ? parseInt(req.query.clientId as string) : undefined;
     const jobId = req.query.jobId ? parseInt(req.query.jobId as string) : undefined;
+    const requestId = req.query.requestId as string;
     const keyword = req.query.keyword as string;
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
     const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
@@ -46,7 +49,8 @@ logsRouter.get('/', (req: Request, res: Response) => {
         category,
         clientId,
         jobId,
-        keyword
+        keyword,
+        requestId
     };
     
     const entries = getLogsForDate(date, filters);
@@ -79,15 +83,16 @@ logsRouter.get('/job/:jobId', (req: Request, res: Response) => {
 logsRouter.get('/client/:clientId', (req: Request, res: Response) => {
     const clientId = parseInt(req.params.clientId as string);
     const date = req.query.date as string;
+    const requestId = req.query.requestId as string;
     
     let entries: LogEntry[] = [];
     
     if (date) {
-        entries = getLogsForDate(date, { clientId });
+        entries = getLogsForDate(date, { clientId, requestId });
     } else {
         const dates = getAvailableLogDates();
         for (const d of dates.slice(0, 7)) {
-            entries = entries.concat(getLogsForDate(d, { clientId }));
+            entries = entries.concat(getLogsForDate(d, { clientId, requestId }));
         }
     }
     
