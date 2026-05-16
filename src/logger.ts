@@ -179,6 +179,8 @@ export const logger = {
         jobId?: string | number;
         durationMs?: number;
         statusCode?: number;
+        requestId?: string;
+        model?: string;
         error?: string;
         details?: any;
     } = {}) {
@@ -197,6 +199,8 @@ export const logger = {
         userId?: number;
         jobId?: string | number;
         durationMs?: number;
+        requestId?: string;
+        model?: string;
         error?: string;
         details?: any;
     } = {}) {
@@ -217,6 +221,8 @@ export const logger = {
         jobId?: string | number;
         durationMs?: number;
         cost?: number;
+        requestId?: string;
+        model?: string;
         error?: string;
         details?: any;
     } = {}) {

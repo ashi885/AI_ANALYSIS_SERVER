@@ -104,3 +104,13 @@ html {
         background-clip: text;
     }
 }
+
+@keyframes pulse-dot {
+    0% { transform: scale(0.9); opacity: 0.7; }
+    50% { transform: scale(1.2); opacity: 1; }
+    100% { transform: scale(0.9); opacity: 0.7; }
+}
+
+.pulse-dot {
+    animation: pulse-dot 1.5s infinite ease-in-out;
+}

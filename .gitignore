@@ -18,3 +18,8 @@ test.js
 test_endpoint.ts
 *.backup
 *.old
+data/
+*.db
+*.sqlite
+management.db
+nul

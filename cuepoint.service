@@ -1,0 +1,17 @@
+[Unit]
+Description=CuePoint Server
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/cuepoint-server
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/www/cuepoint-server/logs/server.log
+StandardError=append:/var/www/cuepoint-server/logs/error.log
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 import { 
     getClientApiKey, logApiRequest, getDatabase, getModulePricing, 
-    logClientUsage, getClientModuleSettings, deductCredits 
+    logClientUsage, getClientModuleSettings, deductCredits, getGlobalDefaultModel
 } from './db-mgmt';
 import { getClientModels } from './middleware/license';
 import { buildPromptParts, PROMPT_TEMPLATES } from './routes/analyze';
@@ -8,7 +8,7 @@ import { sanitizeAIError } from './lib/ai/utils';
 import { OpenRouterClient } from './lib/ai/openrouter';
 import crypto from 'crypto';
 
-const DEFAULT_MODEL = 'anthropic/claude-3.7-sonnet';
+// Configuration constants (Default model now loaded dynamically from DB)
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_MAX_TOKENS = 4096;
 
@@ -159,8 +159,12 @@ async function runAILogic(clientId: number, moduleName: string, payload: any, qu
     const db = getDatabase();
     const clientInfo = db.prepare('SELECT * FROM clients WHERE id = ?').get(clientId) as any;
     const billingType = clientInfo?.billing_type || 'PER_REQUEST';
-    const pricing = await getModulePricing(clientId, moduleName);
+    
+    // Support for duration-based tiered pricing in async jobs
+    const duration = Number(payload.duration) || 0;
+    const pricing = await getModulePricing(clientId, moduleName, duration);
     const moduleCost = pricing?.cost_per_job || 0;
+    
     if (billingType === 'CREDIT' && (clientInfo?.credits || 0) < moduleCost) {
         db.prepare(`UPDATE ai_job_queue SET sub_status = 'Insufficient Credits', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(queueJobId);
         throw new Error('Insufficient credits. Please top up your account.');
@@ -175,7 +179,10 @@ async function runAILogic(clientId: number, moduleName: string, payload: any, qu
         const config = models.find((m: any) => m.module_name === moduleName);
         targetModel = (config as any)?.api_model;
     }
-    targetModel = targetModel || DEFAULT_MODEL;
+    targetModel = targetModel || await getGlobalDefaultModel();
+    if (!targetModel) {
+        throw new Error('No AI model configured for this module and no global fallback set.');
+    }
 
     const aiClient = new OpenRouterClient({ apiKey });
 
@@ -212,7 +219,8 @@ async function runAILogic(clientId: number, moduleName: string, payload: any, qu
                 moduleName: suffixedModuleName, provider: 'openrouter',
                 model: targetModel, status: 'success', costUsd: translationResults.length === 0 ? moduleCost : 0,
                 actualCostUsd: result.cost || 0, tokensUsed: usage.totalTokens, latencyMs: Date.now() - startTime,
-                requestId
+                requestId,
+                durationSeconds: duration
             });
 
             // Log API request for visibility in Job Queue details UI
@@ -281,7 +289,8 @@ async function runAILogic(clientId: number, moduleName: string, payload: any, qu
         actualCostUsd: result.cost || 0,
         tokensUsed: usage.totalTokens || (usage.promptTokens + usage.completionTokens) || 0,
         latencyMs: Date.now() - startTime,
-        requestId: requestId
+        requestId: requestId,
+        durationSeconds: duration
     });
     
     db.prepare(`UPDATE ai_job_queue SET sub_status = 'Finalizing results', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(queueJobId);

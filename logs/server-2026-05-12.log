@@ -1,0 +1,132 @@
+[12/05/2026 15:58:49 UTC] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
+[12/05/2026 16:00:38 UTC] [INFO] [AI] JOB_INGESTION: Incoming payload for job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0 | Details: {"localJobId":"EDM-260513-E407","userId":2,"modulesCount":6,"targetLanguagesRaw":"[\"en\",\"zh\",\"ko\"]","body":{"modules":"[\"transcription\",\"subtitles\",\"metadata\",\"ad_breaks\",\"promo_breaks\",\"subtitle_translation\"]","local_job_id":"EDM-260513-E407","user_id":"2","duration":"2572.64","target_languages":"[\"en\",\"zh\",\"ko\"]"}}
+[12/05/2026 16:00:38 UTC] [INFO] [AI] JOB_LANGS_PARSED: Parsed target languages for job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0 | Details: {"targetLanguages":["en","zh","ko"]}
+[12/05/2026 16:00:38 UTC] [INFO] [AI] JOB_SUBMITTED: Parallel AI job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0 submitted | Details: {"clientId":2,"userId":2,"localJobId":"EDM-260513-E407","modulesRequested":["transcription","subtitles","metadata","ad_breaks","promo_breaks","subtitle_translation"],"targetLanguages":["en","zh","ko"]}
+[12/05/2026 16:00:38 UTC] [INFO] [AI] [Client:2/EDM] AI_TRANSCRIPTION_REQUEST: Job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0 transcribing audio | Details: {"model":"whisper-1","billedRate":5}
+[12/05/2026 16:03:06 UTC] [INFO] [AI] [Client:2] [Job:e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0] AI_TRANSCRIPTION_RESPONSE: Job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0 transcription complete | Details: {"model":"whisper-1","latencyMs":147293,"actualCost":0.257264990234375,"billedToClient":5,"textSample":"字幕由 Amara.org 社群提供 字幕由 Amara.org 社群提供 不好意思 技術問題我們會盡快處理 不好意思 虛擬空間跟 Adam 是同一組源代碼 虛擬空間還在 也就是程序沒問題 但是為什麼 Adam 卻突然消失不見了 不要緊啊 我們再從頭試一次 可能剛才忽略了什麼細節才會這樣 還試什麼 有辦法就不用愣在這了 多收拾東西回去開會 今天是所有當兵最難過的一天 Love Bircher 裡本來是想把一個全新形象的 Adam 帶給大家 但可能因為形象太前衛 Adam 一下接受不了 他拒絕升級 甚至是消失了 但請大家放心 我們已經在努力的說服他 雖然有些困難 但我相信 Adam 絕對不會離開大家 他回歸的時候一定會帶給大家無限驚喜 所以大家記得密切留意我們各大社交平台的最新消息 交了一年錢竟然跟我玩失蹤 馬上滾出來 是不是宣傳手法 想增加點擊率還是想漲價 再這樣就去 4plus1 那邊了 晴晴 你還好嗎 我知道 Adam 陪了你十年 他突然不見了 你肯定非常難受 可能之前真的習慣了 一點也不覺得已經十年了 但是到底是怎麼回事 我在前面看著升級倒計時 但到升級的那一刻 信號突然之間就斷..."}
+[12/05/2026 16:03:06 UTC] [WARN] [AI] NO_MODEL_CONFIGURED: No model configured for module subtitle_translation, defaulting to anthropic/claude-3.7-sonnet | Details: {"clientId":2,"moduleName":"subtitle_translation"}
+[12/05/2026 16:03:06 UTC] [INFO] [AI] [Job:e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0] AI_CHUNKED_PROCESS: Processing metadata in 3 chunks | Details: {"duration":2572.64}
+[12/05/2026 16:03:06 UTC] [INFO] [AI] [Job:e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0] AI_CHUNKED_PROCESS: Processing ad_breaks in 3 chunks | Details: {"duration":2572.64}
+[12/05/2026 16:03:06 UTC] [INFO] [AI] [Job:e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0] AI_CHUNKED_PROCESS: Processing promo_breaks in 3 chunks | Details: {"duration":2572.64}
+[12/05/2026 16:03:06 UTC] [INFO] [AI] AI_TRANSLATION_BATCHING: Translating en in 5 batches for Job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0
+[12/05/2026 16:03:09 UTC] [ERROR] [AI] MODULE_FAILED: Module promo_breaks failed: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet. | Details: {"clientId":2} | Error: Error: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+    at OpenRouterClient.complete (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\openrouter.js:94:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async OpenRouterClient.completeWithRetry (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\openrouter.js:101:24)
+    at async callAI (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\job-processor.js:300:40)
+    at async Promise.all (index 2)
+    at async C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\job-processor.js:512:54
+    at async Promise.all (index 2)
+    at async processAiJob (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\job-processor.js:643:35)
+[12/05/2026 16:03:09 UTC] [ERROR] [AI] MODULE_FAILED: Module ad_breaks failed: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet. | Details: {"clientId":2} | Error: Error: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+    at OpenRouterClient.complete (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\openrouter.js:94:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async OpenRouterClient.completeWithRetry (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\openrouter.js:101:24)
+    at async callAI (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\job-processor.js:300:40)
+    at async Promise.all (index 0)
+    at async C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\job-processor.js:512:54
+    at async Promise.all (index 1)
+    at async processAiJob (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\job-processor.js:643:35)
+[12/05/2026 16:03:09 UTC] [ERROR] [AI] TRANSLATION_LANG_FAILED: Translation to en failed for job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+[12/05/2026 16:03:09 UTC] [INFO] [AI] AI_TRANSLATION_BATCHING: Translating ko in 5 batches for Job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0
+[12/05/2026 16:03:09 UTC] [ERROR] [AI] MODULE_FAILED: Module metadata failed: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet. | Details: {"clientId":2} | Error: Error: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+    at OpenRouterClient.complete (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\openrouter.js:94:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async OpenRouterClient.completeWithRetry (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\openrouter.js:101:24)
+    at async callAI (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\job-processor.js:300:40)
+    at async Promise.all (index 2)
+    at async C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\job-processor.js:551:54
+    at async Promise.all (index 0)
+    at async processAiJob (C:\GOOGLE_AntiGravity\cuepoint-server\dist\lib\ai\job-processor.js:643:35)
+[12/05/2026 16:03:12 UTC] [ERROR] [AI] TRANSLATION_LANG_FAILED: Translation to ko failed for job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+[12/05/2026 16:03:12 UTC] [INFO] [AI] JOB_PROGRESS_SYNC: Synced incremental results for Job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0 (7 modules completed)
+[12/05/2026 16:03:12 UTC] [INFO] [AI] JOB_PROCESSOR_DONE: Job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0 finished with status: partial | Details: {"clientId":2,"billedTotalCost":7,"successfulModules":["transcription","subtitles"],"failedModules":["promo_breaks","ad_breaks","subtitle_translation","metadata"],"resultTypes":["transcription","subtitles",null,null,null,null,null],"totalResults":7}
+[12/05/2026 16:03:12 UTC] [INFO] [AI] [Client:2] AI_AUDIO_RETAINED: Job e5d4e0cb-b3fc-4e6b-8fbd-d1803e1387f0 audio retained for rerunning failed modules: promo_breaks, ad_breaks, subtitle_translation, metadata
+[12/05/2026 16:13:38 UTC] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
+[12/05/2026 16:14:04 UTC] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
+[12/05/2026 16:22:54 UTC] [INFO] [AI] JOB_INGESTION: Incoming payload for job ca7f4452-b859-4c74-9de8-6954a999b337 | Details: {"localJobId":"EDM-260513-4FD2","userId":2,"modulesCount":6,"targetLanguagesRaw":"[\"en\",\"zh\",\"ko\"]","body":{"modules":"[\"transcription\",\"subtitles\",\"metadata\",\"ad_breaks\",\"promo_breaks\",\"subtitle_translation\"]","local_job_id":"EDM-260513-4FD2","user_id":"2","duration":"2572.64","target_languages":"[\"en\",\"zh\",\"ko\"]"}}
+[12/05/2026 16:22:54 UTC] [INFO] [AI] JOB_LANGS_PARSED: Parsed target languages for job ca7f4452-b859-4c74-9de8-6954a999b337 | Details: {"targetLanguages":["en","zh","ko"]}
+[12/05/2026 16:22:54 UTC] [INFO] [AI] JOB_SUBMITTED: Parallel AI job ca7f4452-b859-4c74-9de8-6954a999b337 submitted | Details: {"clientId":2,"userId":2,"localJobId":"EDM-260513-4FD2","modulesRequested":["transcription","subtitles","metadata","ad_breaks","promo_breaks","subtitle_translation"],"targetLanguages":["en","zh","ko"]}
+[12/05/2026 16:22:54 UTC] [INFO] [AI] [Client:2/EDM] AI_TRANSCRIPTION_REQUEST: Job ca7f4452-b859-4c74-9de8-6954a999b337 transcribing audio | Details: {"model":"whisper-1","billedRate":5}
+[12/05/2026 16:25:04 UTC] [INFO] [AI] [Client:2] [Job:ca7f4452-b859-4c74-9de8-6954a999b337] AI_TRANSCRIPTION_RESPONSE: Job ca7f4452-b859-4c74-9de8-6954a999b337 transcription complete | Details: {"model":"whisper-1","latencyMs":129443,"actualCost":0.257264990234375,"billedToClient":5,"textSample":"字幕由 Amara.org 社群提供 字幕由 Amara.org 社群提供 不好意思 技術問題我們會盡快處理 不好意思 虛擬空間跟 Adam 是同一組源代碼 虛擬空間還在 也就是程序沒問題 但是為什麼 Adam 卻突然消失不見了 不要緊啊 我們再從頭試一次 可能剛才忽略了什麼細節才會這樣 還試什麼 有辦法就不用愣在這了 多收拾東西回去開會 今天是所有當兵最難過的一天 Love Bircher 裡本來是想把一個全新形象的 Adam 帶給大家 但可能因為形象太前衛 Adam 一下接受不了 他拒絕升級 甚至是消失了 但請大家放心 我們已經在努力的說服他 雖然有些困難 但我相信 Adam 絕對不會離開大家 他回歸的時候一定會帶給大家無限驚喜 所以大家記得密切留意我們各大社交平台的最新消息 交了一年錢竟然跟我玩失蹤 馬上滾出來 是不是宣傳手法 想增加點擊率還是想漲價 再這樣就去 4plus1 那邊了 晴晴 你還好嗎 我知道 Adam 陪了你十年 他突然不見了 你肯定非常難受 可能之前真的習慣了 一點也不覺得已經十年了 但是到底是怎麼回事 我在前面看著升級倒計時 但到升級的那一刻 信號突然之間就斷..."}
+[12/05/2026 16:25:04 UTC] [WARN] [AI] NO_MODEL_CONFIGURED: No model configured for module subtitle_translation, defaulting to anthropic/claude-3.7-sonnet | Details: {"clientId":2,"moduleName":"subtitle_translation"}
+[12/05/2026 16:25:04 UTC] [INFO] [AI] [Job:ca7f4452-b859-4c74-9de8-6954a999b337] AI_CHUNKED_PROCESS: Processing metadata in 3 chunks | Details: {"duration":2572.64}
+[12/05/2026 16:25:04 UTC] [INFO] [AI] [Job:ca7f4452-b859-4c74-9de8-6954a999b337] AI_CHUNKED_PROCESS: Processing ad_breaks in 3 chunks | Details: {"duration":2572.64}
+[12/05/2026 16:25:04 UTC] [INFO] [AI] [Job:ca7f4452-b859-4c74-9de8-6954a999b337] AI_CHUNKED_PROCESS: Processing promo_breaks in 3 chunks | Details: {"duration":2572.64}
+[12/05/2026 16:25:04 UTC] [INFO] [AI] AI_TRANSLATION_BATCHING: Translating en in 5 batches for Job ca7f4452-b859-4c74-9de8-6954a999b337
+[12/05/2026 16:25:07 UTC] [ERROR] [AI] MODULE_FAILED: Module promo_breaks failed: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet. | Details: {"clientId":2} | Error: Error: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+    at OpenRouterClient.complete (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:128:19)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at OpenRouterClient.completeWithRetry (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:137:24)
+    at callAI (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:336:40)
+    at async Promise.all (index 1)
+    at C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:575:54
+    at async Promise.all (index 2)
+    at processAiJob (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:715:35)
+[12/05/2026 16:25:07 UTC] [ERROR] [AI] MODULE_FAILED: Module ad_breaks failed: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet. | Details: {"clientId":2} | Error: Error: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+    at OpenRouterClient.complete (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:128:19)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at OpenRouterClient.completeWithRetry (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:137:24)
+    at callAI (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:336:40)
+    at async Promise.all (index 2)
+    at C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:575:54
+    at async Promise.all (index 1)
+    at processAiJob (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:715:35)
+[12/05/2026 16:25:07 UTC] [ERROR] [AI] TRANSLATION_LANG_FAILED: Translation to en failed for job ca7f4452-b859-4c74-9de8-6954a999b337: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+[12/05/2026 16:25:07 UTC] [INFO] [AI] AI_TRANSLATION_BATCHING: Translating ko in 5 batches for Job ca7f4452-b859-4c74-9de8-6954a999b337
+[12/05/2026 16:25:07 UTC] [ERROR] [AI] MODULE_FAILED: Module metadata failed: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet. | Details: {"clientId":2} | Error: Error: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+    at OpenRouterClient.complete (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:128:19)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at OpenRouterClient.completeWithRetry (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:137:24)
+    at callAI (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:336:40)
+    at async Promise.all (index 1)
+    at C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:615:54
+    at async Promise.all (index 0)
+    at processAiJob (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:715:35)
+[12/05/2026 16:25:10 UTC] [ERROR] [AI] TRANSLATION_LANG_FAILED: Translation to ko failed for job ca7f4452-b859-4c74-9de8-6954a999b337: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+[12/05/2026 16:25:10 UTC] [INFO] [AI] JOB_PROGRESS_SYNC: Synced incremental results for Job ca7f4452-b859-4c74-9de8-6954a999b337 (7 modules completed)
+[12/05/2026 16:25:10 UTC] [INFO] [AI] JOB_PROCESSOR_DONE: Job ca7f4452-b859-4c74-9de8-6954a999b337 finished with status: partial | Details: {"clientId":2,"billedTotalCost":7,"successfulModules":["transcription","subtitles"],"failedModules":["promo_breaks","ad_breaks","subtitle_translation","metadata"],"resultTypes":["transcription","subtitles",null,null,null,null,null],"totalResults":7}
+[12/05/2026 16:25:10 UTC] [INFO] [AI] [Client:2] AI_AUDIO_RETAINED: Job ca7f4452-b859-4c74-9de8-6954a999b337 audio retained for rerunning failed modules: promo_breaks, ad_breaks, subtitle_translation, metadata
+[12/05/2026 16:41:58 UTC] [INFO] [AI] JOB_INGESTION: Incoming payload for job c1912aff-fc6f-4837-b039-958b7a06d78e | Details: {"localJobId":"EDM-260513-DE80","userId":2,"modulesCount":6,"targetLanguagesRaw":"[\"en\",\"zh\",\"ko\"]","body":{"modules":"[\"transcription\",\"subtitles\",\"metadata\",\"ad_breaks\",\"promo_breaks\",\"subtitle_translation\"]","local_job_id":"EDM-260513-DE80","user_id":"2","duration":"2572.64","target_languages":"[\"en\",\"zh\",\"ko\"]"}}
+[12/05/2026 16:41:58 UTC] [INFO] [AI] JOB_LANGS_PARSED: Parsed target languages for job c1912aff-fc6f-4837-b039-958b7a06d78e | Details: {"targetLanguages":["en","zh","ko"]}
+[12/05/2026 16:41:58 UTC] [INFO] [AI] JOB_SUBMITTED: Parallel AI job c1912aff-fc6f-4837-b039-958b7a06d78e submitted | Details: {"clientId":2,"userId":2,"localJobId":"EDM-260513-DE80","modulesRequested":["transcription","subtitles","metadata","ad_breaks","promo_breaks","subtitle_translation"],"targetLanguages":["en","zh","ko"]}
+[12/05/2026 16:41:58 UTC] [INFO] [AI] [Client:2/EDM] AI_TRANSCRIPTION_REQUEST: Job c1912aff-fc6f-4837-b039-958b7a06d78e transcribing audio | Details: {"model":"whisper-1","billedRate":5}
+[12/05/2026 16:43:37 UTC] [INFO] [AI] [Client:2] [Job:c1912aff-fc6f-4837-b039-958b7a06d78e] AI_TRANSCRIPTION_RESPONSE: Job c1912aff-fc6f-4837-b039-958b7a06d78e transcription complete | Details: {"model":"whisper-1","latencyMs":98943,"actualCost":0.257264990234375,"billedToClient":5,"textSample":"字幕由 Amara.org 社群提供 字幕由 Amara.org 社群提供 不好意思 技術問題我們會盡快處理 不好意思 虛擬空間跟 Adam 是同一組源代碼 虛擬空間還在 也就是程序沒問題 但是為什麼 Adam 卻突然消失不見了 不要緊啊 我們再從頭試一次 可能剛才忽略了什麼細節才會這樣 還試什麼 有辦法就不用愣在這了 多收拾東西回去開會 今天是所有當兵最難過的一天 Love Bircher 裡本來是想把一個全新形象的 Adam 帶給大家 但可能因為形象太前衛 Adam 一下接受不了 他拒絕升級 甚至是消失了 但請大家放心 我們已經在努力的說服他 雖然有些困難 但我相信 Adam 絕對不會離開大家 他回歸的時候一定會帶給大家無限驚喜 所以大家記得密切留意我們各大社交平台的最新消息 交了一年錢竟然跟我玩失蹤 馬上滾出來 是不是宣傳手法 想增加點擊率還是想漲價 再這樣就去 4plus1 那邊了 晴晴 你還好嗎 我知道 Adam 陪了你十年 他突然不見了 你肯定非常難受 可能之前真的習慣了 一點也不覺得已經十年了 但是到底是怎麼回事 我在前面看著升級倒計時 但到升級的那一刻 信號突然之間就斷..."}
+[12/05/2026 16:43:37 UTC] [WARN] [AI] NO_MODEL_CONFIGURED: No model configured for module subtitle_translation, defaulting to anthropic/claude-3.7-sonnet | Details: {"clientId":2,"moduleName":"subtitle_translation"}
+[12/05/2026 16:43:37 UTC] [INFO] [AI] [Job:c1912aff-fc6f-4837-b039-958b7a06d78e] AI_CHUNKED_PROCESS: Processing metadata in 3 chunks | Details: {"duration":2572.64}
+[12/05/2026 16:43:37 UTC] [INFO] [AI] [Job:c1912aff-fc6f-4837-b039-958b7a06d78e] AI_CHUNKED_PROCESS: Processing ad_breaks in 3 chunks | Details: {"duration":2572.64}
+[12/05/2026 16:43:37 UTC] [INFO] [AI] [Job:c1912aff-fc6f-4837-b039-958b7a06d78e] AI_CHUNKED_PROCESS: Processing promo_breaks in 3 chunks | Details: {"duration":2572.64}
+[12/05/2026 16:43:37 UTC] [INFO] [AI] AI_TRANSLATION_BATCHING: Translating en in 5 batches for Job c1912aff-fc6f-4837-b039-958b7a06d78e
+[12/05/2026 16:43:41 UTC] [ERROR] [AI] MODULE_FAILED: Module promo_breaks failed: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet. | Details: {"clientId":2} | Error: Error: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+    at OpenRouterClient.complete (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:128:19)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at OpenRouterClient.completeWithRetry (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:137:24)
+    at callAI (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:336:40)
+    at async Promise.all (index 1)
+    at C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:575:54
+    at async Promise.all (index 2)
+    at processAiJob (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:715:35)
+[12/05/2026 16:43:41 UTC] [ERROR] [AI] MODULE_FAILED: Module metadata failed: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet. | Details: {"clientId":2} | Error: Error: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+    at OpenRouterClient.complete (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:128:19)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at OpenRouterClient.completeWithRetry (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:137:24)
+    at callAI (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:336:40)
+    at async Promise.all (index 1)
+    at C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:615:54
+    at async Promise.all (index 0)
+    at processAiJob (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:715:35)
+[12/05/2026 16:43:41 UTC] [ERROR] [AI] MODULE_FAILED: Module ad_breaks failed: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet. | Details: {"clientId":2} | Error: Error: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+    at OpenRouterClient.complete (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:128:19)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at OpenRouterClient.completeWithRetry (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\openrouter.ts:137:24)
+    at callAI (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:336:40)
+    at async Promise.all (index 1)
+    at C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:575:54
+    at async Promise.all (index 1)
+    at processAiJob (C:\GOOGLE_AntiGravity\cuepoint-server\src\lib\ai\job-processor.ts:715:35)
+[12/05/2026 16:43:42 UTC] [ERROR] [AI] TRANSLATION_LANG_FAILED: Translation to en failed for job c1912aff-fc6f-4837-b039-958b7a06d78e: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+[12/05/2026 16:43:42 UTC] [INFO] [AI] AI_TRANSLATION_BATCHING: Translating ko in 5 batches for Job c1912aff-fc6f-4837-b039-958b7a06d78e
+[12/05/2026 16:43:45 UTC] [ERROR] [AI] TRANSLATION_LANG_FAILED: Translation to ko failed for job c1912aff-fc6f-4837-b039-958b7a06d78e: OpenRouter API failed: 404 No endpoints found for anthropic/claude-3.7-sonnet.
+[12/05/2026 16:43:45 UTC] [INFO] [AI] JOB_PROGRESS_SYNC: Synced incremental results for Job c1912aff-fc6f-4837-b039-958b7a06d78e (7 modules completed)
+[12/05/2026 16:43:45 UTC] [INFO] [AI] JOB_PROCESSOR_DONE: Job c1912aff-fc6f-4837-b039-958b7a06d78e finished with status: partial | Details: {"clientId":2,"billedTotalCost":7,"successfulModules":["transcription","subtitles"],"failedModules":["promo_breaks","metadata","ad_breaks","subtitle_translation"],"resultTypes":["transcription","subtitles",null,null,null,null,null],"totalResults":7}
+[12/05/2026 16:43:45 UTC] [INFO] [AI] [Client:2] AI_AUDIO_RETAINED: Job c1912aff-fc6f-4837-b039-958b7a06d78e audio retained for rerunning failed modules: promo_breaks, metadata, ad_breaks, subtitle_translation

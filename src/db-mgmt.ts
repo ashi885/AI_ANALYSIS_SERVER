@@ -196,6 +196,27 @@ export async function setSystemTimezone(timezone: string): Promise<boolean> {
     }
 }
 
+export async function getGlobalDefaultModel(): Promise<string> {
+    try {
+        const db = getDatabase();
+        const row = db.prepare("SELECT value FROM system_settings WHERE key = 'default_ai_model'").get() as { value: string } | undefined;
+        return row?.value || '';
+    } catch {
+        return '';
+    }
+}
+
+export async function setGlobalDefaultModel(model: string): Promise<boolean> {
+    try {
+        const db = getDatabase();
+        db.prepare("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('default_ai_model', ?, datetime('now'))").run(model);
+        return true;
+    } catch (e: any) {
+        console.error('[DB] Error setting global default model:', e.message);
+        return false;
+    }
+}
+
 export async function getClientTimezone(clientId: number): Promise<string> {
     try {
         const db = getDatabase();
@@ -410,7 +431,7 @@ export async function fetchOpenRouterModels(apiKey: string): Promise<Array<{id: 
             timeout: 10000
         });
         
-        const data = response.data || {};
+        const data = (response as any).data || {};
         let models = data.data || [];
 
         // Fallback: If for some reason the authenticated request returned empty data, 
@@ -424,7 +445,7 @@ export async function fetchOpenRouterModels(apiKey: string): Promise<Array<{id: 
                 },
                 timeout: 10000
             });
-            models = publicRes.data?.data || [];
+            models = (publicRes as any).data?.data || [];
         }
         
         const filteredModels = models
@@ -703,6 +724,7 @@ export interface LogClientUsageParams {
     errorMessage?: string;
     pricingId?: number;
     requestId?: string;
+    durationSeconds?: number;
 }
 
 export async function logClientUsage(params: LogClientUsageParams): Promise<number> {
@@ -712,8 +734,8 @@ export async function logClientUsage(params: LogClientUsageParams): Promise<numb
             INSERT INTO client_usage (
                 client_id, job_id, user_id, module_name, provider, model,
                 status, cost_usd, actual_cost_usd, tokens_used, latency_ms,
-                error_message, pricing_id, request_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                error_message, pricing_id, request_id, duration_seconds
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
             params.clientId,
             params.jobId || null,
@@ -728,7 +750,8 @@ export async function logClientUsage(params: LogClientUsageParams): Promise<numb
             params.latencyMs || null,
             params.errorMessage || null,
             params.pricingId || null,
-            params.requestId || null
+            params.requestId || null,
+            params.durationSeconds || 0
         );
 
         // --- AUTOMATIC CREDIT DEDUCTION (Client Billing) ---
@@ -1546,70 +1569,227 @@ export async function saveClientCredentials(clientId: number, credentials: { sup
 /**
  * Get provider billing information (balances, credits, etc.)
  */
+
+// ===== System Settings =====
+
+export function getSystemSetting(key: string): string | null {
+    try {
+        const db = getDatabase();
+        const row = db.prepare('SELECT value FROM system_settings WHERE key = ?').get(key) as { value: string } | undefined;
+        return row?.value ?? null;
+    } catch (e) {
+        return null;
+    }
+}
+
+export function setSystemSetting(key: string, value: string): boolean {
+    try {
+        const db = getDatabase();
+        db.prepare(`
+            INSERT INTO system_settings (key, value, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+        `).run(key, value);
+        return true;
+    } catch (e: any) {
+        console.error('[DB] Error saving system setting:', e.message);
+        return false;
+    }
+}
+
+export function getAllSystemSettings(): Record<string, string> {
+    try {
+        const db = getDatabase();
+        const rows = db.prepare('SELECT key, value FROM system_settings').all() as { key: string; value: string }[];
+        return Object.fromEntries(rows.map(r => [r.key, r.value]));
+    } catch (e) {
+        return {};
+    }
+}
+
+// ===== Provider Billing (Management Key-based) =====
+
 export async function getProviderBilling() {
     try {
         const db = getDatabase();
-        const apiKeys = db.prepare(`
-            SELECT ak.*, c.name as client_name 
-            FROM client_api_keys ak
-            JOIN clients c ON ak.client_id = c.id
-            WHERE ak.is_active = 1
-        `).all() as any[];
+        const results: any[] = [];
 
-        const results = [];
+        // ── OpenRouter via Management Key ──────────────────────────────────
+        const mgmtKey = getSystemSetting('openrouter_management_key');
 
-        for (const key of apiKeys) {
-            let balanceData: any = null;
-            let error: string | null = null;
-
+        if (mgmtKey) {
             try {
-                const decryptedKey = decrypt(key.api_key);
-                
-                // 1. Fetch local usage from logs (Source of Truth for per-client cost)
-                const usage = db.prepare(`
-                    SELECT SUM(cost_usd) as total_cost 
-                    FROM api_request_logs 
-                    WHERE client_id = ? AND provider = ?
-                    AND created_at >= date('now', 'start of month')
-                `).get(key.client_id, key.provider) as any;
-                
-                const localUsage = usage?.total_cost || 0;
+                const res = await axios.get('https://openrouter.ai/api/v1/keys', {
+                    headers: { 'Authorization': `Bearer ${mgmtKey}` },
+                    timeout: 8000
+                });
 
-                // 2. Fetch external balance if applicable
-                if (key.provider === 'openrouter') {
+                const subKeys: any[] = (res as any).data?.data || [];
+
+                // Build a lookup map: client name (upper) -> client DB record
+                const allClients = db.prepare('SELECT id, name FROM clients').all() as { id: number; name: string }[];
+                const clientLookup = new Map<string, any>();
+                for (const c of allClients) {
+                    clientLookup.set(c.name.toUpperCase().replace(/[^A-Z0-9]/g, ''), c);
+                }
+
+                // Also fetch account-level credit from a sub-key (for overall balance)
+                let accountBalance: number | null = null;
+                try {
+                    const firstKey = db.prepare(`
+                        SELECT api_key FROM client_api_keys 
+                        WHERE provider = 'openrouter' AND is_active = 1 
+                        LIMIT 1
+                    `).get() as { api_key: string } | undefined;
+
+                    if (firstKey?.api_key || mgmtKey) {
+                        const targetKey = mgmtKey || (firstKey?.api_key ? decrypt(firstKey.api_key) : '');
+                        const creditRes = await axios.get('https://openrouter.ai/api/v1/credits', {
+                            headers: { 'Authorization': `Bearer ${targetKey}` },
+                            timeout: 5000
+                        });
+                        const data = (creditRes as any).data?.data || (creditRes as any).data;
+                        if (data && typeof data.total_credits !== 'undefined') {
+                            const usage = data.total_usage ?? data.usage ?? 0;
+                            accountBalance = data.total_credits - usage;
+                        }
+                    }
+                } catch (e) { /* balance fetch failed, non-critical */ }
+
+                for (const sk of subKeys) {
+                    // Match sub-key name to a client in our DB
+                    const normalizedName = (sk.name || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    const matchedClient = clientLookup.get(normalizedName);
+
+                    // Fetch local MTD cost from our logs for matched client
+                    let localMtd = 0;
+                    if (matchedClient) {
+                        const usage = db.prepare(`
+                            SELECT SUM(cost_usd) as total_cost 
+                            FROM api_request_logs 
+                            WHERE client_id = ? AND provider = 'openrouter'
+                            AND created_at >= date('now', 'start of month')
+                        `).get(matchedClient.id) as any;
+                        localMtd = usage?.total_cost || 0;
+                    }
+
+                    results.push({
+                        provider: 'openrouter',
+                        source: 'management_key',
+                        client_id: matchedClient?.id ?? null,
+                        client_name: sk.name,
+                        matched_client: matchedClient?.name ?? null,
+                        api_key_label: sk.label,
+                        api_key_hash: sk.hash,
+                        disabled: sk.disabled,
+                        limit: sk.limit,
+                        limit_remaining: sk.limit_remaining,
+                        usage_total: sk.usage,
+                        usage_daily: sk.usage_daily,
+                        usage_weekly: sk.usage_weekly,
+                        usage_monthly: sk.usage_monthly,
+                        local_mtd: localMtd,
+                        created_at: sk.created_at,
+                        expires_at: sk.expires_at,
+                        account_balance: accountBalance,
+                        last_updated: new Date().toISOString()
+                    });
+                }
+
+            } catch (e: any) {
+                results.push({
+                    provider: 'openrouter',
+                    source: 'management_key',
+                    error: e.response?.data?.error || e.message,
+                    last_updated: new Date().toISOString()
+                });
+            }
+        } else {
+            // Fallback: individual key approach if no management key set
+            const orKeys = db.prepare(`
+                SELECT ak.*, c.name as client_name 
+                FROM client_api_keys ak
+                JOIN clients c ON ak.client_id = c.id
+                WHERE ak.provider = 'openrouter' AND ak.is_active = 1
+            `).all() as any[];
+
+            for (const key of orKeys) {
+                try {
+                    const decryptedKey = decrypt(key.api_key);
                     const res = await axios.get('https://openrouter.ai/api/v1/credits', {
                         headers: { 'Authorization': `Bearer ${decryptedKey}` },
                         timeout: 5000
                     });
-                    const extData = res.data?.data || res.data;
-                    balanceData = { 
-                        ...extData, 
-                        usage_this_month: localUsage 
-                    };
-                } else if (key.provider === 'openai') {
-                    balanceData = { 
-                        usage_this_month: localUsage 
-                    };
+                    const extData = (res as any).data?.data || (res as any).data;
+                    const usage = db.prepare(`
+                        SELECT SUM(cost_usd) as total_cost 
+                        FROM api_request_logs 
+                        WHERE client_id = ? AND provider = 'openrouter'
+                        AND created_at >= date('now', 'start of month')
+                    `).get(key.client_id) as any;
+
+                    results.push({
+                        provider: 'openrouter',
+                        source: 'individual_key',
+                        client_id: key.client_id,
+                        client_name: key.client_name,
+                        api_key_label: key.api_key_prefix,
+                        limit: extData?.limit ?? null,
+                        limit_remaining: extData?.limit_remaining ?? null,
+                        usage_total: extData?.usage ?? 0,
+                        local_mtd: usage?.total_cost || 0,
+                        last_updated: new Date().toISOString()
+                    });
+                } catch (e: any) {
+                    results.push({
+                        provider: 'openrouter',
+                        source: 'individual_key',
+                        client_id: key.client_id,
+                        client_name: key.client_name,
+                        error: e.message,
+                        last_updated: new Date().toISOString()
+                    });
                 }
-            } catch (e: any) {
-                error = e.response?.data?.error?.message || e.message;
             }
+        }
+
+        // ── OpenAI ─────────────────────────────────────────────────────────
+        const openaiKeys = db.prepare(`
+            SELECT ak.*, c.name as client_name 
+            FROM client_api_keys ak
+            JOIN clients c ON ak.client_id = c.id
+            WHERE ak.provider = 'openai' AND ak.is_active = 1
+        `).all() as any[];
+
+        let openaiTotalMtd = 0;
+        for (const key of openaiKeys) {
+            const usage = db.prepare(`
+                SELECT SUM(cost_usd) as total_cost 
+                FROM api_request_logs 
+                WHERE client_id = ? AND provider = 'openai'
+                AND created_at >= date('now', 'start of month')
+            `).get(key.client_id) as any;
+            
+            const cost = usage?.total_cost || 0;
+            openaiTotalMtd += cost;
 
             results.push({
+                provider: 'openai',
+                source: 'individual_key',
                 client_id: key.client_id,
                 client_name: key.client_name,
-                provider: key.provider,
-                api_key_prefix: key.api_key_prefix,
-                balance: balanceData,
-                error: error,
+                api_key_label: key.api_key_prefix,
+                local_mtd: cost,
                 last_updated: new Date().toISOString()
             });
         }
 
-        return results;
+        return {
+            billing: results,
+            openai_total_mtd: openaiTotalMtd
+        };
     } catch (e) {
         console.error('[DB] Error getting provider billing:', e);
-        return [];
+        return { billing: [], openai_total_mtd: 0 };
     }
 }
-

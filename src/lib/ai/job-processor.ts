@@ -5,7 +5,7 @@ import { OpenRouterClient } from './openrouter';
 import { 
     getClientApiKey, logApiRequest, getDatabase, getModulePricing, 
     logClientUsage, getClientModuleSettings, getClientAIExamples, 
-    getTieredValue, getUserSetting, getAiJob 
+    getTieredValue, getUserSetting, getAiJob, getGlobalDefaultModel
 } from '../../db-mgmt';
 import { getClientModels } from '../../middleware/license';
 import { buildPromptParts } from '../../routes/analyze';
@@ -35,7 +35,7 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
         if (!outputDir || !fs.existsSync(outputDir)) return;
         
         try {
-            const { renderTemplate } = await import('../utils/template-engine');
+            const { renderTemplate } = await import('../../utils/template-engine');
             const { content, extension: finalExt } = await renderTemplate(moduleName, data, clientId);
 
             const baseName = originalFilename.includes('.') 
@@ -69,6 +69,14 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
             }
         }
 
+        const globalFallback = await getGlobalDefaultModel();
+
+        // Helper to update job status
+        const updateSubStatus = (status: string) => {
+            db.prepare('UPDATE ai_jobs SET sub_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, jobId);
+            logger.info('AI', 'JOB_STATUS_UPDATE', `Job ${jobId}: ${status}`);
+        };
+
         const whisperApiKey = await getClientApiKey(clientId, 'openai');
         if (!whisperApiKey) throw new Error('OpenAI API key missing for transcription');
 
@@ -84,8 +92,9 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
         let transcriptionResult = null;
         
         if (modulesRequested.includes('transcription') && !existingResultsMap['transcription']) {
+            updateSubStatus('Transcribing audio...');
             const whisperModel = configuredModels.find((m: any) => m.module_name === 'transcription')?.api_model || 'whisper-1';
-            const pricingTranscription = await getModulePricing(clientId, 'transcription');
+            const pricingTranscription = await getModulePricing(clientId, 'transcription', durationRequested || 0);
             const billablePriceTranscription = pricingTranscription?.cost_per_job || 0;
             
             const transcriber = new WhisperClient({ apiKey: whisperApiKey, model: whisperModel });
@@ -139,7 +148,8 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                 actualCostUsd: actualTranscriptionCost,
                 latencyMs: processingTimeTranscription,
                 pricingId: pricingTranscription?.id,
-                requestId: 'whisper-' + Date.now()
+                requestId: 'whisper-' + Date.now(),
+                durationSeconds: transcriptionResult.duration || 0
             });
 
             resultData.push({
@@ -235,7 +245,12 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
 
         // Add subtitles - skip if already exists
         if (modulesRequested.includes('subtitles') && !existingResultsMap['subtitles']) {
-            const pricingSubs = await getModulePricing(clientId, 'subtitles');
+            updateSubStatus('Generating subtitles...');
+            const model = configuredModels.find((m: any) => m.module_name === 'subtitles')?.api_model || globalFallback;
+            if (!model) {
+                throw new Error('No AI model configured for subtitles and no global fallback set. Please configure an AI model.');
+            }
+            const pricingSubs = await getModulePricing(clientId, 'subtitles', transcriptionResult?.duration || durationRequested || 0);
             const billablePriceSubs = pricingSubs?.cost_per_job || 0;
             billedTotalCost += billablePriceSubs;
 
@@ -249,7 +264,8 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                 costUsd: billablePriceSubs,
                 actualCostUsd: 0,
                 latencyMs: 10,
-                pricingId: pricingSubs?.id
+                pricingId: pricingSubs?.id,
+                durationSeconds: transcriptionResult?.duration || durationRequested || 0
             });
 
             logApiRequest({
@@ -321,8 +337,12 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                 const modulePromises = modulesToProcess.map(async (moduleName: string) => {
                     let model = configuredModels.find((m: any) => m.module_name === moduleName)?.api_model;
                     if (!model) {
-                        model = 'anthropic/claude-3.7-sonnet';
-                        logger.warn('AI', 'NO_MODEL_CONFIGURED', `No model configured for module ${moduleName}, defaulting to ${model}`, { clientId, moduleName });
+                        model = globalFallback;
+                        if (!model) {
+                            logger.warn('AI', 'NO_MODEL_CONFIGURED', `No model configured for module ${moduleName} and no global fallback set. Skipping module.`, { clientId, moduleName });
+                            return null;
+                        }
+                        logger.warn('AI', 'USING_GLOBAL_FALLBACK', `No model configured for module ${moduleName}, defaulting to global setting: ${model}`, { clientId, moduleName });
                     }
 
                     const duration = durationRequested || transcriptionResult?.duration || 0;
@@ -441,6 +461,8 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                             const targetLang = lang.toLowerCase();
                             const normalizedTarget = langMap[targetLang] || targetLang;
                             
+                            updateSubStatus(`Translating to ${lang}...`);
+
                             if (normalizedTarget === sourceLanguage || (sourceLanguage === 'en' && normalizedTarget === 'eng')) {
                                 continue;
                             }
@@ -533,7 +555,8 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                                 await logClientUsage({
                                     clientId, jobId, moduleName: suffixedModuleName, provider: 'openrouter', model: model!, status: 'success',
                                     costUsd: billablePrice, actualCostUsd: totalCost, tokensUsed: totalTokens, latencyMs: totalLatency,
-                                    pricingId: pricing?.id, requestId: `trans_${lang}_${Date.now()}`
+                                    pricingId: pricing?.id, requestId: `trans_${lang}_${Date.now()}`,
+                                    durationSeconds: duration
                                 });
 
                                 if (allTranslatedSegments.length > 0) {
@@ -567,6 +590,7 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                     }
 
                     try {
+                        updateSubStatus(`Analyzing ${moduleName}...`);
                         let finalResultData: any;
                         let totalModuleProviderCost = 0;
                         let totalModuleTokens = 0;
@@ -685,7 +709,8 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                         await logClientUsage({
                             clientId, jobId, moduleName, provider: 'openrouter', model: model!, status: 'success',
                             costUsd: billablePrice, actualCostUsd: totalModuleProviderCost, tokensUsed: totalModuleTokens, latencyMs: totalModuleLatency,
-                            pricingId: pricing?.id
+                            pricingId: pricing?.id,
+                            durationSeconds: duration
                         });
 
                         successfulModules.push(moduleName);

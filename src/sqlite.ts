@@ -73,7 +73,8 @@ function createTables() {
             description TEXT,
             provider_bal_openai REAL DEFAULT 0,
             provider_bal_openrouter REAL DEFAULT 0,
-            provider_warn_threshold REAL DEFAULT 25.0
+            provider_warn_threshold REAL DEFAULT 25.0,
+            allow_rate_card_fetch INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS client_api_keys (
@@ -155,6 +156,7 @@ function createTables() {
             tokens_used INTEGER,
             latency_ms INTEGER,
             error_message TEXT,
+            duration_seconds REAL DEFAULT 0,
             pricing_id INTEGER,
             request_id TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -180,23 +182,23 @@ function createTables() {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
         );
+    `);
 
-        // Migration: Add target_languages to existing ai_jobs table
-        const aiJobsInfo = db.prepare("PRAGMA table_info(ai_jobs)").all() as any[];
-        const hasTargetLangs = aiJobsInfo.some(col => col.name === 'target_languages');
-        
-        if (!hasTargetLangs) {
-            console.log('[SQLite] MIGRATION: Adding target_languages column to ai_jobs table...');
-            try {
-                db.prepare("ALTER TABLE ai_jobs ADD COLUMN target_languages TEXT").run();
-                console.log('[SQLite] MIGRATION SUCCESS: target_languages column added.');
-            } catch (err: any) {
-                console.error('[SQLite] MIGRATION FAILED:', err.message);
-            }
-        } else {
-            console.log('[SQLite] Migration check: target_languages column already exists.');
+    // Migration: Add target_languages to existing ai_jobs table
+    const aiJobsInfo = db.prepare("PRAGMA table_info(ai_jobs)").all() as any[];
+    const hasTargetLangs = aiJobsInfo.some(col => col.name === 'target_languages');
+    
+    if (!hasTargetLangs) {
+        console.log('[SQLite] MIGRATION: Adding target_languages column to ai_jobs table...');
+        try {
+            db.prepare("ALTER TABLE ai_jobs ADD COLUMN target_languages TEXT").run();
+            console.log('[SQLite] MIGRATION SUCCESS: target_languages column added.');
+        } catch (err: any) {
+            console.error('[SQLite] MIGRATION FAILED:', err.message);
         }
+    }
 
+    db.exec(`
         CREATE INDEX IF NOT EXISTS idx_ai_jobs_client_created ON ai_jobs(client_id, created_at DESC);
 
         CREATE TABLE IF NOT EXISTS module_pricing (
@@ -367,11 +369,19 @@ function createTables() {
             latency_ms INTEGER,
             cost_usd REAL,
             tokens_used INTEGER,
+            duration_seconds REAL DEFAULT 0,
             error_message TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     `);
+
 
     // Safe schema migrations for existing databases
     // (SQLite does not support IF NOT EXISTS for columns, so we try/catch each)
@@ -393,6 +403,11 @@ function createTables() {
         `ALTER TABLE clients ADD COLUMN provider_bal_openai REAL DEFAULT 0`,
         `ALTER TABLE clients ADD COLUMN provider_bal_openrouter REAL DEFAULT 0`,
         `ALTER TABLE clients ADD COLUMN provider_warn_threshold REAL DEFAULT 25.0`,
+        `ALTER TABLE ai_jobs ADD COLUMN sub_status TEXT`,
+        `ALTER TABLE clients ADD COLUMN allow_rate_card_fetch INTEGER DEFAULT 0`,
+        `ALTER TABLE client_usage ADD COLUMN duration_seconds REAL DEFAULT 0`,
+        `ALTER TABLE client_usage_logs ADD COLUMN duration_seconds REAL DEFAULT 0`,
+        `ALTER TABLE ai_jobs ADD COLUMN file_duration REAL DEFAULT 0`
     ];
     for (const sql of migrations) {
         try { db.exec(sql); } catch (_) { /* column already exists */ }
@@ -446,12 +461,12 @@ function seedDefaultData() {
     if (modelCount.count === 0) {
         const models = [
             ['transcription', 'openai', 'whisper-1', 'Whisper-1'],
-            ['subtitles', 'openrouter', 'anthropic/claude-3.7-sonnet', 'Claude 3.7 Sonnet'],
+            ['subtitles', 'openrouter', 'anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet'],
             ['subtitles', 'openrouter', 'openai/gpt-4o', 'GPT-4o'],
-            ['metadata', 'openrouter', 'anthropic/claude-3.7-sonnet', 'Claude 3.7 Sonnet'],
-            ['ad_breaks', 'openrouter', 'anthropic/claude-3.7-sonnet', 'Claude 3.7 Sonnet'],
-            ['promo_breaks', 'openrouter', 'anthropic/claude-3.7-sonnet', 'Claude 3.7 Sonnet'],
-            ['subtitle_translation', 'openrouter', 'anthropic/claude-3.7-sonnet', 'Claude 3.7 Sonnet'],
+            ['metadata', 'openrouter', 'anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet'],
+            ['ad_breaks', 'openrouter', 'anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet'],
+            ['promo_breaks', 'openrouter', 'anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet'],
+            ['subtitle_translation', 'openrouter', 'anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet'],
         ];
         const insertModel = db.prepare('INSERT INTO available_models (module_id, provider, model_id, display_name) VALUES (?, ?, ?, ?)');
         for (const model of models) {
@@ -472,7 +487,7 @@ function seedDefaultData() {
         const transExists = db.prepare('SELECT id FROM available_models WHERE module_id = ?').get('subtitle_translation');
         if (!transExists) {
             db.prepare('INSERT INTO available_models (module_id, provider, model_id, display_name) VALUES (?, ?, ?, ?)').run(
-                'subtitle_translation', 'openrouter', 'anthropic/claude-3.7-sonnet', 'Claude 3.7 Sonnet'
+                'subtitle_translation', 'openrouter', 'anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet'
             );
         }
     } catch (e) {}
@@ -548,6 +563,12 @@ function seedDefaultData() {
             is_active INTEGER DEFAULT 1,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (client_id) REFERENCES clients (id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     `);
 }

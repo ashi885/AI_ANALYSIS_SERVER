@@ -9,7 +9,10 @@
 
 import { Router, Request, Response } from 'express';
 import { licenseMiddleware, LicensedRequest, getClientModels } from '../middleware/license';
-import { getClientApiKey, logApiRequest, getModulePricing, deductCredits, getClientById, logClientUsage, getProviderLabels } from '../db-mgmt';
+import { 
+    getClientApiKey, logApiRequest, getModulePricing, deductCredits, 
+    getClientById, logClientUsage, getProviderLabels, getGlobalDefaultModel 
+} from '../db-mgmt';
 import { OpenRouterClient } from '../lib/ai/openrouter';
 import { enqueueAIJob, getAIJob } from '../ai-queue';
 import { logger } from '../logger';
@@ -17,7 +20,7 @@ import { logger } from '../logger';
 export const analyzeRouter = Router();
 
 // Configuration constants
-const DEFAULT_MODEL = 'anthropic/claude-3.7-sonnet';
+// Configuration constants (Default model now loaded dynamically from DB)
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_MAX_TOKENS = 4096;
 
@@ -383,7 +386,10 @@ analyzeRouter.post('/analyze', licenseMiddleware, async (req: LicensedRequest, r
             const config = models.find(m => m.module_name === moduleName);
             targetModel = config?.api_model;
         }
-        targetModel = targetModel || DEFAULT_MODEL;
+        targetModel = targetModel || await getGlobalDefaultModel();
+        if (!targetModel) {
+            return res.status(400).json({ error: 'No AI model configured and no global fallback set.' });
+        }
 
         // Build messages with proper role separation
         const { system: systemContent, user: userContent } = moduleName && PROMPT_TEMPLATES[moduleName]
@@ -493,7 +499,10 @@ analyzeRouter.post('/module/:moduleName', licenseMiddleware, async (req: License
         // Get model from client config or use default
         const models = await getClientModels(clientId!);
         const config = models.find(m => m.module_name === moduleName);
-        const model = config?.api_model || DEFAULT_MODEL;
+        const model = config?.api_model || await getGlobalDefaultModel();
+        if (!model) {
+            return res.status(400).json({ error: 'No AI model configured for this module and no global fallback set.' });
+        }
 
         // Get API key
         const apiKey = await getClientApiKey(clientId!, 'openrouter');
@@ -528,6 +537,11 @@ analyzeRouter.post('/module/:moduleName', licenseMiddleware, async (req: License
             });
         }
         // ---------------------------
+
+        // Build structured prompt parts for this module
+        // Build messages with proper role separation
+        // (Already declared above)
+
 
         const aiClient = new OpenRouterClient({ apiKey });
         const result = await aiClient.completeWithRetry({
@@ -574,7 +588,8 @@ analyzeRouter.post('/module/:moduleName', licenseMiddleware, async (req: License
             actualCostUsd: result.cost || 0, // The raw provider cost
             tokensUsed: usage.totalTokens || (usage.promptTokens + usage.completionTokens) || 0,
             latencyMs: Date.now() - startTime,
-            requestId: requestId
+            requestId: requestId,
+            durationSeconds: duration
         });
 
         // --- CREDIT SYSTEM DEDUCTION ---

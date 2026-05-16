@@ -318,14 +318,14 @@ aiRouter.post('/job', licenseMiddleware, upload.single('audio'), async (req: Lic
             }
         }
 
+        const duration = req.body.duration ? parseFloat(String(req.body.duration)) : 0;
+
         db.prepare(`
-            INSERT INTO ai_jobs (id, client_id, user_id, local_job_id, status, modules_requested, target_languages, audio_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(jobId, clientId, userId, localJobId, 'processing', JSON.stringify(modulesRequested), targetLanguages ? JSON.stringify(targetLanguages) : null, file.path);
+            INSERT INTO ai_jobs (id, client_id, user_id, local_job_id, status, modules_requested, target_languages, audio_path, file_duration)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(jobId, clientId, userId, localJobId, 'processing', JSON.stringify(modulesRequested), targetLanguages ? JSON.stringify(targetLanguages) : null, file.path, duration);
 
-        logger.info('AI', 'JOB_SUBMITTED', `Parallel AI job ${jobId} submitted`, { clientId, userId, localJobId, modulesRequested, targetLanguages });
-
-        const duration = req.body.duration ? parseFloat(String(req.body.duration)) : null;
+        logger.info('AI', 'JOB_SUBMITTED', `Parallel AI job ${jobId} submitted`, { clientId, userId, localJobId, modulesRequested, targetLanguages, duration });
         
         // Fire and forget
         processAiJob(jobId, file.path, modulesRequested, clientId!, clientName || 'Unknown', duration, targetLanguages || undefined).catch(err => {
@@ -359,6 +359,7 @@ aiRouter.get('/job/:id', licenseMiddleware, async (req: LicensedRequest, res: Re
             modules_requested: JSON.parse(job.modules_requested),
             result_data: job.result_data ? JSON.parse(job.result_data) : null,
             total_cost_usd: job.total_cost_usd,
+            file_duration: job.file_duration,
             error_message: job.error_message,
             created_at: job.created_at,
             updated_at: job.updated_at

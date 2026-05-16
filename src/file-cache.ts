@@ -43,6 +43,7 @@ interface ClientLicenseState {
     apiKeys: Array<{ provider: string; api_key: string; api_key_prefix: string; is_active: boolean }>;
     configuredModels: Array<{ module_name: string; api_provider: string; api_model: string }>;
     moduleRates: Record<string, any>;
+    allowRateCardFetch: boolean;
     // Credentials for client app
     supabaseUrl: string | null;
     supabaseAnonKey: string | null;
@@ -191,7 +192,7 @@ export async function initializeFileCache(): Promise<void> {
         console.log('[FileCache] No existing cache, loading from database...');
         
         const db = getDatabase();
-        const clients = db.prepare('SELECT id, client_uuid, api_key, status, contract_end, name, module_rates FROM clients').all() as any[];
+        const clients = db.prepare('SELECT id, client_uuid, api_key, status, contract_end, name, module_rates, allow_rate_card_fetch FROM clients').all() as any[];
         
         if (!clients || clients.length === 0) {
             console.log('[FileCache] No clients found in database');
@@ -230,6 +231,7 @@ export async function initializeFileCache(): Promise<void> {
                 apiKeys,
                 configuredModels: [], // Will be populated on demand
                 moduleRates,
+                allowRateCardFetch: !!client.allow_rate_card_fetch,
                 supabaseUrl: credentials.supabase_url,
                 supabaseAnonKey: credentials.supabase_anon_key,
                 cachedAt: new Date().toISOString(),
@@ -283,7 +285,7 @@ export async function refreshClientInFileCache(clientId: number, apiKey: string,
         
         if (!uuid) {
             const db = getDatabase();
-            clientData = db.prepare('SELECT id, client_uuid, api_key, status, contract_end, name, module_rates FROM clients WHERE id = ?').get(clientId) as any;
+            clientData = db.prepare('SELECT id, client_uuid, api_key, status, contract_end, name, module_rates, allow_rate_card_fetch FROM clients WHERE id = ?').get(clientId) as any;
             
             if (!clientData) {
                 console.log(`[FileCache] Client not found: ${clientId}`);
@@ -302,7 +304,7 @@ export async function refreshClientInFileCache(clientId: number, apiKey: string,
         // Fetch fresh client data if not already fetched
         if (!clientData) {
             const db = getDatabase();
-            clientData = db.prepare('SELECT id, client_uuid, api_key, status, contract_end, name, module_rates FROM clients WHERE id = ?').get(clientId) as any;
+            clientData = db.prepare('SELECT id, client_uuid, api_key, status, contract_end, name, module_rates, allow_rate_card_fetch FROM clients WHERE id = ?').get(clientId) as any;
             
             if (!clientData) {
                 console.log(`[FileCache] Client not found: ${clientId}`);
@@ -339,6 +341,7 @@ export async function refreshClientInFileCache(clientId: number, apiKey: string,
             apiKeys,
             configuredModels: [],
             moduleRates,
+            allowRateCardFetch: !!clientData.allow_rate_card_fetch,
             supabaseUrl: credentials.supabase_url,
             supabaseAnonKey: credentials.supabase_anon_key,
             cachedAt: new Date().toISOString(),

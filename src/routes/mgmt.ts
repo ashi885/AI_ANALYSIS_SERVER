@@ -12,11 +12,11 @@ import {
     getProviderLabels, setProviderLabel, setClientModelsBulk,
     toggleApiKey, deleteApiKey, updateWatcherHeartbeat,
     getClientModels, syncOpenRouterModelsToDb, discoverOpenRouterModels, addCredits, getCreditTransactions,
-    getSystemTimezone, setSystemTimezone, getClientTimezone, setClientTimezone, getSystemSettings,
     getClientModuleSettings, saveClientModuleSetting,
     saveClientAIExample, getClientAIExamples,
     getClientCredentials, saveClientCredentials, getUserSetting,
-    getProviderBilling
+    getProviderBilling, getSystemSetting, setSystemSetting, getAllSystemSettings,
+    setSystemTimezone
 } from '../db-mgmt';
 import { getLicenseFromCache, refreshLicenseInCache, invalidateLicenseInCache, getLicenseCacheDetails } from '../license-cache';
 import { processAiJob } from '../lib/ai/job-processor';
@@ -241,7 +241,8 @@ mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
             name, billing_margin_flat, billing_margin_percent, 
             contract_start, contract_end, setup_fee, plan, 
             module_rates, billing_type, credits, description,
-            provider_bal_openai, provider_bal_openrouter, provider_warn_threshold
+            provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
+            allow_rate_card_fetch
         } = req.body;
         if (!name) return res.status(400).json({ error: 'Client name is required' });
 
@@ -258,14 +259,16 @@ mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
                 client_uuid, name, api_key, billing_margin_flat, billing_margin_percent, 
                 contract_start, contract_end, setup_fee, plan, status, 
                 module_rates, billing_type, credits, short_code, description,
-                provider_bal_openai, provider_bal_openrouter, provider_warn_threshold
+                provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
+                allow_rate_card_fetch
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
             clientUuid, name, apiKey, billing_margin_flat || 0.50, billing_margin_percent || 20.0, 
             contract_start || today, contract_end || null, setup_fee || 0, plan || 'Professional', 
             moduleRatesStr, billing_type || 'PER_REQUEST', credits || 0, shortCode, description || null,
-            provider_bal_openai || 0, provider_bal_openrouter || 0, provider_warn_threshold || 25.0
+            provider_bal_openai || 0, provider_bal_openrouter || 0, provider_warn_threshold || 25.0,
+            allow_rate_card_fetch ? 1 : 0
         );
 
         const newClient = db.prepare('SELECT * FROM clients WHERE id = ?').get(result.lastInsertRowid) as any;
@@ -285,7 +288,8 @@ mgmtRouter.put('/clients/:id', requireAdminAuth, async (req: Request, res: Respo
             name, billing_margin_flat, billing_margin_percent, 
             contract_start, contract_end, setup_fee, plan, status, 
             module_rates, billing_type, credits, short_code, description,
-            provider_bal_openai, provider_bal_openrouter, provider_warn_threshold
+            provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
+            allow_rate_card_fetch
         } = req.body;
         const clientId = parseInt(String(req.params.id));
         
@@ -299,14 +303,16 @@ mgmtRouter.put('/clients/:id', requireAdminAuth, async (req: Request, res: Respo
                 status = ?, module_rates = ?, billing_type = ?, credits = ?, 
                 short_code = ?, description = ?, 
                 provider_bal_openai = ?, provider_bal_openrouter = ?, provider_warn_threshold = ?,
-                updated_at = datetime('now')
+                allow_rate_card_fetch = ?,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         `).run(
             name, billing_margin_flat, billing_margin_percent, 
             contract_start, contract_end || null, setup_fee, plan, 
             status, moduleRatesStr, billing_type, credits, 
-            short_code, description, 
+            short_code, description,
             provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
+            allow_rate_card_fetch ? 1 : 0,
             clientId
         );
 
@@ -327,6 +333,11 @@ mgmtRouter.put('/clients/:id', requireAdminAuth, async (req: Request, res: Respo
             logger.info('SYSTEM', 'MODULE_PRICING_SYNCED', `Synced ${Object.keys(module_rates).length} module rates to pricing table for client ${clientId}`);
         }
 
+        const updatedClient = db.prepare('SELECT api_key FROM clients WHERE id = ?').get(clientId) as any;
+        if (updatedClient) {
+            invalidateLicenseInCache(updatedClient.api_key);
+        }
+
         logger.info('SYSTEM', 'CLIENT_UPDATED', `Client ${name} updated`, { clientId, status, plan });
         res.json({ success: true });
     } catch (err: any) {
@@ -338,6 +349,10 @@ mgmtRouter.delete('/clients/:id', requireAdminAuth, async (req: Request, res: Re
     const clientId = parseInt(String(req.params.id));
     const db = getDatabase();
     logger.warn('SYSTEM', 'CLIENT_DELETED', `Client ${clientId} deleted`);
+    const client = db.prepare('SELECT api_key FROM clients WHERE id = ?').get(clientId) as any;
+    if (client) {
+        invalidateLicenseInCache(client.api_key);
+    }
     db.prepare('DELETE FROM clients WHERE id = ?').run(clientId);
     res.json({ success: true });
 });
@@ -346,6 +361,10 @@ mgmtRouter.post('/clients/:id/regenerate-key', requireAdminAuth, async (req: Req
     const clientId = parseInt(String(req.params.id));
     const newApiKey = `CUE-${crypto.randomBytes(12).toString('hex').toUpperCase()}`;
     const db = getDatabase();
+    const oldClient = db.prepare('SELECT api_key FROM clients WHERE id = ?').get(clientId) as any;
+    if (oldClient) {
+        invalidateLicenseInCache(oldClient.api_key);
+    }
     db.prepare('UPDATE clients SET api_key = ?, updated_at = datetime(\'now\') WHERE id = ?').run(newApiKey, clientId);
     logger.info('SYSTEM', 'CLIENT_API_KEY_REGENERATED', `API key regenerated for client ${clientId}`);
     res.json({ apiKey: newApiKey });
@@ -532,14 +551,23 @@ mgmtRouter.get('/summary', requireAdminAuth, async (req: Request, res: Response)
         
         const modulesConfigured = (db.prepare('SELECT COUNT(*) as count FROM client_models').get() as any).count;
 
+        // Get recent AI request logs for the dashboard
+        const recentLogs = db.prepare(`
+            SELECT l.*, c.name as client_name 
+            FROM api_request_logs l
+            JOIN clients c ON l.client_id = c.id
+            ORDER BY l.created_at DESC 
+            LIMIT 5
+        `).all();
+
         const result = {
             totalClients: totalClients || 0,
             activeClients: activeClients || 0,
             configuredEndpoints: configuredEndpoints || 0,
             modulesConfigured: modulesConfigured || 0,
-            moduleBreakdown: []
+            moduleBreakdown: [],
+            recentLogs: recentLogs || []
         };
-        console.log('[Mgmt] Summary result:', result);
         res.json(result);
     } catch (err: any) {
         console.error('[Mgmt] Summary crash:', err);
@@ -556,8 +584,20 @@ mgmtRouter.get('/clients/:id/api-keys', requireAdminAuth, async (req: Request, r
 
 mgmtRouter.get('/clients/:id/models', requireAdminAuth, async (req: Request, res: Response) => {
     try {
-        const clientId = parseInt(String(req.params.id));
+        const clientIdentifier = String(req.params.id);
         const db = getDatabase();
+        
+        let clientId: number;
+        const isNumericId = /^\d+$/.test(clientIdentifier) && clientIdentifier.length < 20;
+        
+        if (!isNumericId) {
+            const client = db.prepare('SELECT id FROM clients WHERE client_uuid = ?').get(clientIdentifier) as { id: number } | undefined;
+            if (!client) return res.status(404).json({ error: 'Client not found' });
+            clientId = client.id;
+        } else {
+            clientId = parseInt(clientIdentifier);
+        }
+
         const models = db.prepare('SELECT * FROM client_models WHERE client_id = ?').all(clientId);
         res.json(models || []);
     } catch (err: any) {
@@ -610,7 +650,9 @@ mgmtRouter.post('/clients/:id/models', requireAdminAuth, async (req: Request, re
         let clientId: number;
         let clientUUID: string;
         
-        if (clientIdentifier.includes('-') && clientIdentifier.length > 10) {
+        const isNumericId = /^\d+$/.test(clientIdentifier) && clientIdentifier.length < 20;
+        
+        if (!isNumericId) {
             // It's a UUID
             const clientByUUID = db.prepare('SELECT id, api_key, client_uuid FROM clients WHERE client_uuid = ?').get(clientIdentifier) as any;
             
@@ -710,12 +752,19 @@ mgmtRouter.post('/clients/:id/promote-to-example', requireAdminAuth, async (req:
 mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
     try {
         const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
-        if (!apiKey) return res.status(400).json({ error: 'API key required' });
+        console.log(`[MgmtConfig] Request received. API Key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'MISSING'}`);
+        
+        if (!apiKey) {
+            console.warn('[MgmtConfig] Rejecting request: API key required');
+            return res.status(400).json({ error: 'API key required' });
+        }
 
         const cached = getLicenseFromCache(apiKey);
-        
+        const today = new Date().toISOString().split('T')[0];
+
         if (cached) {
-            const today = new Date().toISOString().split('T')[0];
+            console.log(`[MgmtConfig] Serving from cache for client: ${cached.name}. allowRateCardFetch: ${!!(cached as any).allowRateCardFetch}`);
+
             const isExpired = cached.contractEnd && cached.contractEnd < today;
             const isActive = cached.status === 'active' && !isExpired;
 
@@ -734,15 +783,21 @@ mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
                 clientId: cached.clientUuid,
                 clientName: cached.name,
                 shortCode: (cached as any).shortCode || cached.name.substring(0, 3).toUpperCase(),
+                moduleRates: (cached as any).allowRateCardFetch ? (cached as any).moduleRates : null,
+                allowRateCardFetch: !!(cached as any).allowRateCardFetch,
                 _cached: true
             });
         }
 
         const db = getDatabase();
         const client = db.prepare('SELECT * FROM clients WHERE api_key = ?').get(apiKey) as any;
-        if (!client) return res.status(404).json({ valid: false, error: 'Client not found' });
+        if (!client) {
+            console.warn(`[MgmtConfig] Client not found for key: ${apiKey.substring(0, 10)}...`);
+            return res.status(404).json({ valid: false, error: 'Client not found' });
+        }
 
-        const today = new Date().toISOString().split('T')[0];
+        console.log(`[MgmtConfig] Found in DB: ${client.name}. allow_rate_card_fetch: ${client.allow_rate_card_fetch}`);
+
         const isExpired = client.contract_end && client.contract_end < today;
         const isActive = client.status === 'active' && !isExpired;
 
@@ -763,7 +818,9 @@ mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
             shortCode: client.short_code || client.name.substring(0, 3).toUpperCase(),
             billingType: client.billing_type || 'PER_REQUEST',
             credits: client.credits || 0,
-            timezone: client.timezone || 'UTC'
+            timezone: client.timezone || 'UTC',
+            moduleRates: client.allow_rate_card_fetch ? (typeof client.module_rates === 'string' ? JSON.parse(client.module_rates) : client.module_rates) : null,
+            allowRateCardFetch: !!client.allow_rate_card_fetch
         });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -813,9 +870,9 @@ mgmtRouter.get('/clients/credentials', async (req: Request, res: Response) => {
             sanitizedProviderLabels[genericProvider] = label as string;
         });
 
-        // Parse module_rates from client
+        // Parse module_rates from client (only if fetching is allowed)
         let moduleRates: Record<string, any> = {};
-        if (client.module_rates) {
+        if (client.module_rates && client.allow_rate_card_fetch) {
             try {
                 moduleRates = typeof client.module_rates === 'string' ? JSON.parse(client.module_rates) : client.module_rates;
             } catch (e) {
@@ -1005,11 +1062,46 @@ mgmtRouter.get('/available-models/discover-openrouter', requireAdminAuth, async 
  */
 mgmtRouter.get('/provider-billing', requireAdminAuth, async (req: Request, res: Response) => {
     try {
-        const billing = await getProviderBilling();
-        res.json({ success: true, billing });
+        const result = await getProviderBilling();
+        res.json({ success: true, ...result });
     } catch (error: any) {
         console.error('[Billing] Failed to fetch provider billing:', error);
         res.status(500).json({ error: 'Failed to fetch provider billing' });
+    }
+});
+
+/**
+ * GET /api/mgmt/system-settings
+ * Return all system settings (values masked for security)
+ */
+mgmtRouter.get('/system-settings', requireAdminAuth, (req: Request, res: Response) => {
+    const settings = getAllSystemSettings();
+    // Mask sensitive values before sending
+    const masked: Record<string, string> = {};
+    for (const [k, v] of Object.entries(settings)) {
+        if (k.includes('key') || k.includes('secret') || k.includes('token')) {
+            masked[k] = v ? `${v.substring(0, 12)}...${v.slice(-4)}` : '';
+        } else {
+            masked[k] = v;
+        }
+    }
+    res.json({ success: true, settings: masked });
+});
+
+/**
+ * POST /api/mgmt/system-settings
+ * Save a system setting (key/value pair)
+ */
+mgmtRouter.post('/system-settings', requireAdminAuth, (req: Request, res: Response) => {
+    const { key, value } = req.body;
+    if (!key || typeof value === 'undefined') {
+        return res.status(400).json({ error: 'key and value are required' });
+    }
+    const ok = setSystemSetting(key, value);
+    if (ok) {
+        res.json({ success: true, message: `Setting '${key}' saved` });
+    } else {
+        res.status(500).json({ error: 'Failed to save setting' });
     }
 });
 
@@ -1436,7 +1528,7 @@ mgmtRouter.get('/notifications/pending-status', requireAdminAuth, async (req: Re
 // ===== AI Audit Logs (Diagnostic View) =====
 
 // Get all AI audit logs
-mgmtRouter.get('/ai-logs', requireAdminAuth, async (req: Request, res: Response) => {
+mgmtRouter.get('/api-logs', requireAdminAuth, async (req: Request, res: Response) => {
     try {
         const { limit = 100, clientId, moduleId } = req.query;
         const db = getDatabase();
@@ -1573,7 +1665,7 @@ mgmtRouter.get('/sync-queue/stats', requireAdminAuth, async (req: Request, res: 
 // GET Global settings
 mgmtRouter.get('/settings/system', requireAdminAuth, async (req: Request, res: Response) => {
     try {
-        const settings = await getSystemSettings();
+        const settings = await getAllSystemSettings();
         res.json(settings);
     } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -1636,7 +1728,7 @@ mgmtRouter.get('/ai-queue', requireAdminAuth, async (req: Request, res: Response
         
         const db = getDatabase();
         let sql = `SELECT 
-            j.id, j.client_id, j.status, j.modules_requested, j.total_cost_usd, j.provider_cost_usd,
+            j.id, j.client_id, j.status, j.sub_status, j.modules_requested, j.total_cost_usd, j.provider_cost_usd,
             j.error_message, j.local_job_id, j.user_id,
             j.created_at, j.updated_at,
             c.name as client_name
@@ -1785,6 +1877,7 @@ mgmtRouter.post('/jobs/:id/export-result', requireAuth, async (req: Request, res
 mgmtRouter.post('/jobs/:id/download-result', requireAuth, async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
+        const { moduleName, data } = req.body;
         const db = getDatabase();
         const job = db.prepare('SELECT client_id FROM ai_jobs WHERE id = ?').get(id) as any;
         
@@ -1803,3 +1896,25 @@ mgmtRouter.post('/jobs/:id/download-result', requireAuth, async (req: Request, r
     }
 });
 
+// ===== Global AI Fallback Settings =====
+
+mgmtRouter.get('/settings/global-fallback', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const { getGlobalDefaultModel } = await import('../db-mgmt');
+        const model = await getGlobalDefaultModel();
+        res.json({ model });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.post('/settings/global-fallback', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const { model } = req.body;
+        const { setGlobalDefaultModel } = await import('../db-mgmt');
+        await setGlobalDefaultModel(model);
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Search, RefreshCcw, ChevronRight, Copy, Check, Info, XCircle, X,
   Terminal, Clock, ExternalLink, Activity, Database, Shield, Layout,
-  Cpu, Zap, Receipt, Globe, Monitor, Code, AlertTriangle
+  Cpu, Zap, Receipt, Globe, Monitor, Code, AlertTriangle, Settings, Lock, AlertCircle
 } from 'lucide-react';
 import { LogsManager } from './components/LogsManager';
 
@@ -49,9 +49,8 @@ const MODULE_OPTIONS = [
         name: 'Ad Breaks',
         description: 'Detect optimal ad placement',
         defaultProvider: 'openrouter',
-        defaultModel: 'anthropic/claude-3.7-sonnet',
+        defaultModel: 'anthropic/claude-3.5-sonnet',
         availableModels: [
-            { provider: 'openrouter', model: 'anthropic/claude-3.7-sonnet', name: 'Claude 3.7 Sonnet' },
             { provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
             { provider: 'openrouter', model: 'openai/gpt-4o', name: 'GPT-4o' }
         ]
@@ -61,9 +60,8 @@ const MODULE_OPTIONS = [
         name: 'Viral Highlights',
         description: 'Detect promo-worthy segments',
         defaultProvider: 'openrouter',
-        defaultModel: 'anthropic/claude-3.7-sonnet',
+        defaultModel: 'anthropic/claude-3.5-sonnet',
         availableModels: [
-            { provider: 'openrouter', model: 'anthropic/claude-3.7-sonnet', name: 'Claude 3.7 Sonnet' },
             { provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
             { provider: 'openrouter', model: 'openai/gpt-4o', name: 'GPT-4o' }
         ]
@@ -73,9 +71,8 @@ const MODULE_OPTIONS = [
         name: 'Subtitle Translation',
         description: 'Translate subtitles to other languages',
         defaultProvider: 'openrouter',
-        defaultModel: 'anthropic/claude-3.7-sonnet',
+        defaultModel: 'anthropic/claude-3.5-sonnet',
         availableModels: [
-            { provider: 'openrouter', model: 'anthropic/claude-3.7-sonnet', name: 'Claude 3.7 Sonnet' },
             { provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
             { provider: 'openrouter', model: 'openai/gpt-4o', name: 'GPT-4o' }
         ]
@@ -120,6 +117,7 @@ interface Client {
     maintenance_mode?: number;
     description?: string;
     short_code?: string;
+    allow_rate_card_fetch?: number;
 }
 
 interface SummaryData {
@@ -130,6 +128,7 @@ interface SummaryData {
     totalJobsThisMonth: number;
     totalRevenue: number;
     moduleBreakdown: { module_name: string; clients: number }[];
+    recentLogs: any[];
 }
 
 const MODULES = [
@@ -167,15 +166,15 @@ const NAV_ITEMS = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
     { id: 'clients', label: 'Clients', icon: '👥' },
     { id: 'configuration', label: 'Configuration', icon: '⚙️' },
-    { id: 'settings', label: 'Settings', icon: '🔧' },
-    { id: 'logging', label: 'Server Logs', icon: '📝' },
-    { id: 'api-logs', label: 'API Logs', icon: '🔌' },
     { id: 'billing', label: 'Billing', icon: '💰' },
+    { id: 'api-logs', label: 'AI Request Logs', icon: '🔌' },
+    { id: 'logging', label: 'Server Logs', icon: '📝' },
     { id: 'provider-billing', label: 'Provider Billing', icon: '🏦' },
     { id: 'ai-jobs', label: 'AI Job Queue', icon: '🤖' },
     { id: 'license-cache', label: 'License Cache', icon: '🗂️' },
     { id: 'smtp', label: 'SMTP Settings', icon: '📧' },
     { id: 'sync-queue', label: 'Sync Queue', icon: '🔄' },
+    { id: 'settings', label: 'Settings', icon: '🔧' },
 ];
 
 class SimpleErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
@@ -214,6 +213,14 @@ function App() {
         localStorage.setItem('cuepoint_admin_tab', activeTab);
     }, [activeTab]);
 
+    useEffect(() => {
+        const handleNav = (e: any) => {
+            if (e.detail) setActiveTab(e.detail);
+        };
+        window.addEventListener('changeTab' as any, handleNav);
+        return () => window.removeEventListener('changeTab' as any, handleNav);
+    }, []);
+
     const [clients, setClients] = useState<Client[]>([]);
     const [summary, setSummary] = useState<SummaryData | null>(null);
     const [loading, setLoading] = useState(true);
@@ -232,7 +239,9 @@ function App() {
     const [billingSummary, setBillingSummary] = useState<any>(null);
     const [providerBilling, setProviderBilling] = useState<any[]>([]);
     const [providerBillingLoading, setProviderBillingLoading] = useState(false);
+    const [openaiTotalMtd, setOpenaiTotalMtd] = useState(0);
     const [balanceAlerts, setBalanceAlerts] = useState<any[]>([]);
+    const [globalDefaultModel, setGlobalDefaultModel] = useState<string>('');
 
     // Auth state
     const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -240,6 +249,7 @@ function App() {
     const [loginError, setLoginError] = useState('');
     const [loginEmail, setLoginEmail] = useState('');
     const [loginPassword, setLoginPassword] = useState('');
+    const [savingClient, setSavingClient] = useState(false);
 
     const authFetch = useCallback(async (url: string, options: RequestInit = {}): Promise<Response> => {
         const auth = localStorage.getItem('cuepoint_admin_auth');
@@ -256,6 +266,7 @@ function App() {
             if (res.ok) {
                 const data = await res.json();
                 setProviderBilling(data.billing || []);
+                setOpenaiTotalMtd(data.openai_total_mtd || 0);
             }
         } catch (err) {
             console.error('Failed to fetch provider billing', err);
@@ -267,21 +278,24 @@ function App() {
     const fetchData = useCallback(async () => {
         setLoading(true);
         try {
-            const [clientsRes, summaryRes, modelsRes, billingRes] = await Promise.all([
+            const [clientsRes, summaryRes, modelsRes, billingRes, fallbackRes] = await Promise.all([
                 authFetch('/api/mgmt/clients'),
                 authFetch('/api/mgmt/summary'),
                 authFetch('/api/mgmt/available-models'),
-                authFetch('/api/mgmt/billing/summary')
+                authFetch('/api/mgmt/billing/summary'),
+                authFetch('/api/mgmt/settings/global-fallback')
             ]);
 
             const clientsData = await clientsRes.json();
             const summaryData = await summaryRes.json();
             const modelsData = await modelsRes.json();
             const billingData = billingRes.ok ? await billingRes.json() : null;
+            const fallbackData = await fallbackRes.json();
 
             setAvailableModels(modelsData.models || modelsData);
             setBillingSummary(billingData);
             setSummary(summaryData);
+            setGlobalDefaultModel(fallbackData.model || '');
 
             setClients(clientsData.map((c: Client) => ({
                 ...c,
@@ -381,6 +395,7 @@ function App() {
         try {
             const url = editingClient ? `/api/mgmt/clients/${editingClient.id}` : '/api/mgmt/clients';
             const method = editingClient ? 'PUT' : 'POST';
+            setSavingClient(true);
             const res = await authFetch(url, {
                 method,
                 headers: { 'Content-Type': 'application/json' },
@@ -391,7 +406,11 @@ function App() {
                 setEditingClient(null);
                 fetchData();
             }
-        } catch (err) { console.error('Save failed', err); }
+        } catch (err) { 
+            console.error('Save failed', err); 
+        } finally {
+            setSavingClient(false);
+        }
     };
 
     const handleRegenerateKey = async (client: Client) => {
@@ -418,6 +437,22 @@ function App() {
         } catch (err) { console.error(err); }
     };
 
+    const handleSaveCredentials = async (clientId: number, credentials: any) => {
+        const res = await authFetch(`/api/mgmt/clients/${clientId}/credentials`, {
+            method: 'POST',
+            body: JSON.stringify(credentials)
+        });
+        if (res.ok) fetchData();
+    };
+
+    const handleSaveGlobalDefaultModel = async (model: string) => {
+        const res = await authFetch('/api/mgmt/settings/global-fallback', {
+            method: 'POST',
+            body: JSON.stringify({ model })
+        });
+        if (res.ok) fetchData();
+    };
+
     const handleAddApiKey = async (clientId: number, provider: string, apiKey: string) => {
         try {
             const res = await authFetch(`/api/mgmt/clients/${clientId}/api-keys`, {
@@ -436,19 +471,12 @@ function App() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ models })
             });
-            if (res.ok) fetchData();
+            if (res.ok) await fetchData();
             else throw new Error('Failed to save models');
         } catch (err) {
             console.error(err);
             throw err;
         }
-    };
-
-    const handleSaveCredentials = (clientId: number, supabaseUrl: string, supabaseAnonKey: string) => {
-        setClientCredentials(prev => ({
-            ...prev,
-            [clientId]: { supabase_url: supabaseUrl, supabase_anon_key: supabaseAnonKey }
-        }));
     };
 
     const getStatus = (client: Client) => {
@@ -557,6 +585,8 @@ function App() {
                             onSaveModel={handleSaveModel}
                             clientCredentials={clientCredentials}
                             onSaveCredentials={handleSaveCredentials}
+                            globalDefaultModel={globalDefaultModel}
+                            onSaveGlobalDefaultModel={handleSaveGlobalDefaultModel}
                         />
                     )}
                     {activeTab === 'settings' && (
@@ -571,14 +601,22 @@ function App() {
                     {activeTab === 'logging' && <LogsManager authFetch={authFetch} />}
                     {activeTab === 'api-logs' && <ApiLogsView logs={apiLogs} loading={apiLogsLoading} clients={clients} onRefresh={fetchApiLogs} />}
                     {activeTab === 'billing' && <BillingView clients={clients} getStatus={getStatus} selectedBillingClient={selectedBillingClient} setSelectedBillingClient={setSelectedBillingClient} billingData={billingSummary} />}
-                    {activeTab === 'provider-billing' && <ProviderBillingView billing={providerBilling} loading={providerBillingLoading} onRefresh={fetchProviderBilling} />}
-                    {activeTab === 'ai-jobs' && <AiJobsView authFetch={authFetch} />}
+                    {activeTab === 'provider-billing' && (
+                        <ProviderBillingView 
+                            billing={providerBilling} 
+                            loading={providerBillingLoading} 
+                            onRefresh={fetchProviderBilling} 
+                            authFetch={authFetch}
+                            openaiTotalMtd={openaiTotalMtd}
+                        />
+                    )}
+                    {activeTab === 'ai-jobs' && <AiJobsView authFetch={authFetch} clients={clients} />}
                     {activeTab === 'license-cache' && <LicenseCacheView authFetch={authFetch} />}
                     {activeTab === 'smtp' && <SmtpSettingsView authFetch={authFetch} />}
                     {activeTab === 'sync-queue' && <SyncQueueView authFetch={authFetch} />}
                 </div>
             </main>
-            {showModal && <ClientModal client={editingClient} authFetch={authFetch} onClose={() => setShowModal(false)} onSave={handleSaveClient} />}
+            {showModal && <ClientModal client={editingClient} authFetch={authFetch} onClose={() => setShowModal(false)} onSave={handleSaveClient} saving={savingClient} />}
         </div>
     );
 }
@@ -595,107 +633,312 @@ function PrivateValue({ value, isCurrency = true }: { value: any, isCurrency?: b
     );
 }
 
-const ProviderBillingView = ({ billing, loading, onRefresh }: { billing: any[], loading: boolean, onRefresh: () => void }) => {
+const ProviderBillingView = ({ billing, loading, onRefresh, authFetch, openaiTotalMtd }: { billing: any[], loading: boolean, onRefresh: () => void, authFetch: any, openaiTotalMtd: number }) => {
+    const [mgmtKey, setMgmtKey] = useState('');
+    const [saving, setSaving] = useState(false);
+    const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+
+    useEffect(() => {
+        const fetchSettings = async () => {
+            try {
+                const res = await authFetch('/api/mgmt/system-settings');
+                if (res.ok) {
+                    const data = await res.json();
+                    setMgmtKey(data.settings?.openrouter_management_key || '');
+                }
+            } catch (err) {
+                console.error('Failed to fetch system settings', err);
+            }
+        };
+        fetchSettings();
+    }, [authFetch]);
+
+    const handleSaveMgmtKey = async () => {
+        const trimmedKey = mgmtKey.trim();
+        if (!trimmedKey) return;
+        setSaving(true);
+        setMessage(null);
+        try {
+            const res = await authFetch('/api/mgmt/system-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: 'openrouter_management_key', value: trimmedKey })
+            });
+            if (res.ok) {
+                setMessage({ type: 'success', text: 'Management Key saved! Refreshing billing data...' });
+                setTimeout(() => setMessage(null), 3000);
+                onRefresh();
+            } else {
+                const data = await res.json();
+                setMessage({ type: 'error', text: data.error || 'Failed to save key' });
+            }
+        } catch (err) {
+            setMessage({ type: 'error', text: 'Network error' });
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Calculate account-wide balance from the first management-key entry that has it
+    const accountBalanceEntry = Array.isArray(billing) ? billing.find(b => b.source === 'management_key' && b.account_balance !== null) : null;
+    const accountBalance = accountBalanceEntry?.account_balance;
+
+    // Helper to safely render potential objects from API errors
+    const safeRender = (val: any) => {
+        if (!val) return null;
+        if (typeof val === 'object') return val.message || JSON.stringify(val);
+        return String(val);
+    };
+
     return (
-        <div style={{ animation: 'fadeIn 0.3s ease-out' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+        <div style={{ animation: 'fadeIn 0.4s cubic-bezier(0, 0, 0.2, 1)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '32px' }}>
                 <div>
-                    <h2 style={{ fontSize: '20px', fontWeight: 600, marginBottom: '4px' }}>AI Provider Account Balances</h2>
-                    <p style={{ fontSize: '13px', color: '#6b7280' }}>Real-time credits and balance information for all configured API keys.</p>
+                    <h2 style={{ fontSize: '24px', fontWeight: 700, marginBottom: '8px', letterSpacing: '-0.02em' }}>Financial Infrastructure</h2>
+                    <p style={{ fontSize: '14px', color: '#6b7280' }}>Real-time monitoring of AI provider liquidity and client-level consumption.</p>
                 </div>
-                <button 
-                    onClick={onRefresh} 
-                    disabled={loading}
-                    style={{ ...styles.buttonSecondary, display: 'flex', alignItems: 'center', gap: '8px' }}
-                >
-                    <RefreshCcw size={14} className={loading ? 'animate-spin' : ''} />
-                    <span>Refresh All</span>
-                </button>
+                <div style={{ display: 'flex', gap: '16px' }}>
+                    {/* OpenAI Strategy Card */}
+                    <div style={{ 
+                        background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.02))', 
+                        border: '1px solid rgba(16, 185, 129, 0.2)', 
+                        borderRadius: '16px', 
+                        padding: '12px 20px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'flex-end',
+                        minWidth: '160px',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+                    }}>
+                        <span style={{ fontSize: '11px', color: '#10b981', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '0.05em', marginBottom: '4px' }}>OpenAI MTD Usage</span>
+                        <span style={{ fontSize: '22px', fontWeight: 800, color: '#34d399' }}>
+                            ${Number(openaiTotalMtd).toFixed(2)}
+                        </span>
+                    </div>
+
+                    {/* OpenRouter Balance Card */}
+                    {accountBalance !== undefined && accountBalance !== null && (
+                        <div style={{ 
+                            background: 'linear-gradient(135deg, rgba(124, 58, 237, 0.1), rgba(124, 58, 237, 0.02))', 
+                            border: '1px solid rgba(124, 58, 237, 0.2)', 
+                            borderRadius: '16px', 
+                            padding: '12px 20px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'flex-end',
+                            minWidth: '200px',
+                            boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+                        }}>
+                            <span style={{ fontSize: '11px', color: '#a78bfa', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '0.05em', marginBottom: '4px' }}>Master Liquidity (OR)</span>
+                            <span style={{ fontSize: '22px', fontWeight: 800, color: '#c084fc' }}>
+                                <PrivateValue value={Number(accountBalance).toFixed(2)} />
+                            </span>
+                        </div>
+                    )}
+                    <button 
+                        onClick={onRefresh} 
+                        disabled={loading}
+                        style={{ 
+                            ...styles.buttonSecondary, 
+                            height: '48px', 
+                            width: '48px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            borderRadius: '12px',
+                            alignSelf: 'center',
+                            backgroundColor: 'rgba(255,255,255,0.03)'
+                        }}
+                    >
+                        <RefreshCcw size={18} className={loading ? 'animate-spin' : ''} />
+                    </button>
+                </div>
             </div>
 
-            {loading && billing.length === 0 ? (
-                <div style={{ display: 'flex', justifyContent: 'center', padding: '100px' }}>
-                    <div className="animate-spin" style={{ width: '40px', height: '40px', border: '3px solid rgba(16,185,129,0.2)', borderTopColor: '#10b981', borderRadius: '50%' }}></div>
+            {/* Management Key Section */}
+            <div style={{ 
+                ...styles.card, 
+                marginBottom: '32px', 
+                backgroundColor: 'rgba(13,13,18,0.6)', 
+                border: '1px dashed rgba(16, 185, 129, 0.3)',
+                padding: '24px'
+            }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ width: '32px', height: '32px', borderRadius: '8px', backgroundColor: 'rgba(16,185,129,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <Settings size={18} color="#10b981" />
+                        </div>
+                        <div>
+                            <span style={{ fontWeight: 700, fontSize: '15px', color: '#fff' }}>OpenRouter Infrastructure Link</span>
+                            <div style={{ fontSize: '12px', color: '#6b7280' }}>Enable automated sub-key synchronization and workspace-wide auditing.</div>
+                        </div>
+                    </div>
+                    {message && (
+                        <div style={{ 
+                            fontSize: '12px', 
+                            color: message.type === 'success' ? '#10b981' : '#ef4444',
+                            backgroundColor: message.type === 'success' ? 'rgba(16,185,129,0.05)' : 'rgba(239,68,68,0.05)',
+                            padding: '6px 12px',
+                            borderRadius: '8px',
+                            border: `1px solid ${message.type === 'success' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'}`
+                        }}>
+                            {safeRender(message.text)}
+                        </div>
+                    )}
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                    <div style={{ flex: 1, position: 'relative' }}>
+                        <Lock size={14} style={{ position: 'absolute', left: '12px', top: '14px', color: '#4b5563' }} />
+                        <input 
+                            type="password"
+                            placeholder="sk-or-v1-................................................................"
+                            value={mgmtKey}
+                            onChange={(e) => setMgmtKey(e.target.value)}
+                            style={{ ...styles.input, paddingLeft: '36px', fontFamily: 'monospace', fontSize: '13px', backgroundColor: 'rgba(0,0,0,0.2)' }}
+                        />
+                    </div>
+                    <button 
+                        onClick={handleSaveMgmtKey}
+                        disabled={saving || !mgmtKey}
+                        style={{ ...styles.button, padding: '0 24px', height: '44px' }}
+                    >
+                        {saving ? 'Synchronizing...' : 'Establish Connection'}
+                    </button>
+                </div>
+            </div>
+
+            {loading && (!Array.isArray(billing) || billing.length === 0) ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '120px' }}>
+                    <div className="animate-spin" style={{ width: '48px', height: '48px', border: '3px solid rgba(16,185,129,0.1)', borderTopColor: '#10b981', borderRadius: '50%', marginBottom: '20px' }}></div>
+                    <div style={{ color: '#6b7280', fontSize: '14px', fontWeight: 500 }}>Polling provider telemetry...</div>
                 </div>
             ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: '20px' }}>
-                    {billing.map((item, idx) => (
-                        <div key={idx} style={{ ...styles.card, margin: 0, position: 'relative', overflow: 'hidden' }}>
-                            <div style={{ 
-                                position: 'absolute', 
-                                top: '-20px', 
-                                right: '-20px', 
-                                width: '100px', 
-                                height: '100px', 
-                                background: item.provider === 'openai' ? 'linear-gradient(135deg, rgba(16,185,129,0.1), transparent)' : 'linear-gradient(135deg, rgba(59,130,246,0.1), transparent)',
-                                borderRadius: '50%',
-                                zIndex: 0
-                            }} />
-
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: '24px' }}>
+                    {Array.isArray(billing) && billing.map((item, idx) => (
+                        <div key={idx} style={{ 
+                            ...styles.card, 
+                            margin: 0, 
+                            position: 'relative', 
+                            overflow: 'hidden',
+                            border: item.error ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(255,255,255,0.07)',
+                            backgroundColor: item.error ? 'rgba(239, 68, 68, 0.03)' : 'rgba(17,17,24,0.8)',
+                            backdropFilter: 'blur(10px)',
+                            transition: 'transform 0.2s, box-shadow 0.2s',
+                            cursor: 'default'
+                        }}
+                        className="hover:bg-white/[0.02]"
+                        >
                             <div style={{ position: 'relative', zIndex: 1 }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
                                     <div>
-                                        <div style={{ fontSize: '12px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>{item.client_name}</div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <span style={{ fontSize: '18px', fontWeight: 700 }}>{item.provider === 'openai' ? 'OpenAI' : 'OpenRouter'}</span>
-                                            <span style={{ fontSize: '12px', color: '#6b7280', fontFamily: 'monospace', backgroundColor: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }}>
-                                                {item.api_key_prefix}...
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                            <span style={{ 
+                                                fontSize: '10px', 
+                                                padding: '3px 8px', 
+                                                borderRadius: '6px', 
+                                                backgroundColor: item.provider === 'openai' ? 'rgba(16,185,129,0.15)' : 'rgba(124, 58, 237, 0.15)',
+                                                color: item.provider === 'openai' ? '#10b981' : '#a78bfa',
+                                                fontWeight: 800,
+                                                textTransform: 'uppercase',
+                                                letterSpacing: '0.05em'
+                                            }}>
+                                                {item.provider}
                                             </span>
+                                            {item.source === 'management_key' && (
+                                                <span style={{ fontSize: '10px', color: '#6b7280', display: 'flex', alignItems: 'center', gap: '4px', backgroundColor: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }}>
+                                                    <Activity size={10} /> Sync Active
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#fff', letterSpacing: '-0.01em' }}>
+                                            {item.client_name}
+                                            {item.matched_client && item.matched_client !== item.client_name && (
+                                                <span style={{ fontSize: '13px', color: '#6b7280', fontWeight: 400, marginLeft: '8px' }}>
+                                                    ({item.matched_client})
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div style={{ fontSize: '12px', color: '#4b5563', fontFamily: 'monospace', marginTop: '6px', backgroundColor: 'rgba(0,0,0,0.2)', padding: '4px 8px', borderRadius: '6px', display: 'inline-block' }}>
+                                            {item.api_key_label || item.api_key_hash?.substring(0, 16) + '...'}
                                         </div>
                                     </div>
                                     <div style={{ 
-                                        padding: '8px', 
-                                        borderRadius: '10px', 
-                                        backgroundColor: item.provider === 'openai' ? 'rgba(16,185,129,0.1)' : 'rgba(59,130,246,0.1)',
-                                        color: item.provider === 'openai' ? '#10b981' : '#3b82f6'
+                                        width: '44px',
+                                        height: '44px',
+                                        borderRadius: '12px', 
+                                        backgroundColor: 'rgba(255,255,255,0.03)',
+                                        border: '1px solid rgba(255,255,255,0.08)',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
                                     }}>
-                                        {item.provider === 'openai' ? <Zap size={20} /> : <Cpu size={20} />}
+                                        {item.provider === 'openai' ? <Zap size={22} color="#10b981" /> : <Cpu size={22} color="#7c3aed" />}
                                     </div>
                                 </div>
 
                                 {item.error ? (
-                                    <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '10px', padding: '12px', display: 'flex', gap: '10px', alignItems: 'center' }}>
-                                        <XCircle size={16} color="#ef4444" />
-                                        <div style={{ fontSize: '12px', color: '#ef4444' }}>{item.error}</div>
+                                    <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.08)', borderRadius: '12px', padding: '16px', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+                                        <div style={{ fontSize: '13px', color: '#f87171', display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                                            <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+                                            <span>{safeRender(item.error)}</span>
+                                        </div>
                                     </div>
                                 ) : (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                <span style={{ fontSize: '12px', color: '#6b7280' }}>Usage (MTD)</span>
-                                                <span style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>
-                                                    ${(item.balance?.usage_this_month || 0).toFixed(3)}
-                                                </span>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                                        {/* Main Stats Grid */}
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                                            <div style={{ padding: '16px', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                                <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em', marginBottom: '8px' }}>Local Usage (MTD)</div>
+                                                <div style={{ fontSize: '24px', fontWeight: 800, color: '#fff' }}>${Number(item.local_mtd || 0).toFixed(3)}</div>
                                             </div>
-                                            
-                                            {item.provider === 'openrouter' && (
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', padding: '10px', backgroundColor: 'rgba(16,185,129,0.05)', borderRadius: '8px' }}>
-                                                    <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 500 }}>Account Balance</span>
-                                                    <span style={{ fontSize: '16px', fontWeight: 700, color: '#10b981' }}>
-                                                        <PrivateValue value={(item.balance?.total_credits || 0).toFixed(2)} />
-                                                    </span>
+                                            <div style={{ padding: '16px', backgroundColor: 'rgba(16,185,129,0.03)', borderRadius: '14px', border: '1px solid rgba(16,185,129,0.1)' }}>
+                                                <div style={{ fontSize: '11px', color: '#10b981', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em', marginBottom: '8px' }}>Available Credit</div>
+                                                <div style={{ fontSize: '24px', fontWeight: 800, color: '#10b981' }}>
+                                                    {item.limit_remaining !== null ? (
+                                                        <PrivateValue value={Number(item.limit_remaining).toFixed(2)} />
+                                                    ) : 'UNLIMITED'}
                                                 </div>
-                                            )}
-                                        </div>
-                                        <div style={{ fontSize: '11px', color: '#6b7280', textAlign: 'right' }}>
-                                            {item.provider === 'openai' ? 'Local usage logs estimate' : 'Real-time provider balance'}
-                                        </div>
-
-                                        <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.05)', width: '100%' }} />
-
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <div style={{ fontSize: '11px', color: '#6b7280' }}>
-                                                Last updated: {new Date(item.last_updated).toLocaleTimeString()}
                                             </div>
-                                            <a 
-                                                href={item.provider === 'openai' ? 'https://platform.openai.com/usage' : 'https://openrouter.ai/activity'} 
-                                                target="_blank" 
-                                                rel="noreferrer"
-                                                style={{ fontSize: '11px', color: '#10b981', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px' }}
-                                            >
-                                                <span>View Source</span>
-                                                <ExternalLink size={10} />
-                                            </a>
+                                        </div>
+
+                                        {/* Progress Bar for Limits */}
+                                        {item.limit && item.limit > 0 && (
+                                            <div style={{ backgroundColor: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '10px' }}>
+                                                    <span style={{ color: '#9ca3af', fontWeight: 500 }}>Consumption of ${item.limit} Threshold</span>
+                                                    <span style={{ color: '#fff', fontWeight: 700 }}>{Math.round((item.usage_total / item.limit) * 100)}%</span>
+                                                </div>
+                                                <div style={{ height: '8px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '4px', overflow: 'hidden' }}>
+                                                    <div style={{ 
+                                                        height: '100%', 
+                                                        width: `${Math.min(100, (item.usage_total / item.limit) * 100)}%`, 
+                                                        backgroundColor: (item.usage_total / item.limit) > 0.85 ? '#ef4444' : '#10b981',
+                                                        boxShadow: (item.usage_total / item.limit) > 0.85 ? '0 0 10px rgba(239,68,68,0.5)' : 'none',
+                                                        transition: 'width 1.5s cubic-bezier(0.4, 0, 0.2, 1)'
+                                                    }} />
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                                            <div style={{ fontSize: '11px', color: '#4b5563', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                <Clock size={12} />
+                                                Updated {new Date(item.last_updated).toLocaleTimeString()}
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '16px' }}>
+                                                {item.disabled && (
+                                                    <span style={{ fontSize: '10px', color: '#ef4444', fontWeight: 800, letterSpacing: '0.05em' }}>SUSPENDED</span>
+                                                )}
+                                                <a 
+                                                    href={item.provider === 'openai' ? 'https://platform.openai.com/usage' : 'https://openrouter.ai/activity'} 
+                                                    target="_blank" 
+                                                    rel="noreferrer"
+                                                    style={{ fontSize: '11px', color: '#10b981', textDecoration: 'none', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}
+                                                >
+                                                    EXPLORE <ExternalLink size={12} />
+                                                </a>
+                                            </div>
                                         </div>
                                     </div>
                                 )}
@@ -705,12 +948,14 @@ const ProviderBillingView = ({ billing, loading, onRefresh }: { billing: any[], 
                 </div>
             )}
             
-            {billing.length === 0 && !loading && (
-                <div style={{ textAlign: 'center', padding: '100px', backgroundColor: '#111118', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                    <Database size={48} color="#374151" style={{ marginBottom: '16px' }} />
-                    <div style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px' }}>No API Keys Found</div>
-                    <p style={{ fontSize: '14px', color: '#6b7280', maxWidth: '400px', margin: '0 auto' }}>
-                        Add API keys in the Client Configuration section to monitor provider balances here.
+            {(!Array.isArray(billing) || billing.length === 0) && !loading && (
+                <div style={{ textAlign: 'center', padding: '120px', backgroundColor: 'rgba(17,17,24,0.6)', borderRadius: '24px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ width: '80px', height: '80px', borderRadius: '24px', backgroundColor: 'rgba(255,255,255,0.02)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 24px' }}>
+                        <Database size={40} color="#374151" />
+                    </div>
+                    <div style={{ fontSize: '20px', fontWeight: 700, color: '#fff', marginBottom: '12px' }}>Operational Data Missing</div>
+                    <p style={{ fontSize: '15px', color: '#6b7280', maxWidth: '440px', margin: '0 auto', lineHeight: 1.6 }}>
+                        No billing telemetry found. Link a workspace management key above or register client-specific API keys in the configuration portal.
                     </p>
                 </div>
             )}
@@ -743,7 +988,7 @@ function DashboardView({ summary, clients, loading }: { summary: SummaryData | n
 
     return (
         <div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '16px', marginBottom: '24px' }}>
                 {stats.map((stat, i) => (
                     <div key={i} style={styles.statCard}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
@@ -755,9 +1000,64 @@ function DashboardView({ summary, clients, loading }: { summary: SummaryData | n
                     </div>
                 ))}
             </div>
-            <div style={{ ...styles.card, padding: '40px', textAlign: 'center' }}>
-                <div style={{ fontSize: '48px', marginBottom: '16px' }}>📊</div>
-                <p style={{ color: '#6b7280' }}>Detailed analytics coming soon</p>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+                <div style={styles.card}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                        <h3 style={{ fontSize: '16px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <Activity size={18} color="#10b981" />
+                            Recent AI Activity
+                        </h3>
+                        <button onClick={() => window.dispatchEvent(new CustomEvent('changeTab', { detail: 'api-logs' }))} style={{ ...styles.buttonSecondary, fontSize: '12px', padding: '4px 12px' }}>View All</button>
+                    </div>
+                    
+                    {summary?.recentLogs && summary.recentLogs.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            {summary.recentLogs.map((log: any) => (
+                                <div key={log.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: log.response_status < 400 ? '#10b981' : '#ef4444' }}></div>
+                                        <div>
+                                            <div style={{ fontSize: '13px', fontWeight: 600 }}>{log.model?.split('/').pop()}</div>
+                                            <div style={{ fontSize: '11px', color: '#6b7280' }}>{log.client_name} • {new Date(log.created_at).toLocaleTimeString()}</div>
+                                        </div>
+                                    </div>
+                                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#10b981' }}>${(log.billed_cost || 0).toFixed(3)}</div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div style={{ padding: '40px', textAlign: 'center', color: '#6b7280' }}>
+                            <p>No recent AI activity recorded</p>
+                        </div>
+                    )}
+                </div>
+
+                <div style={styles.card}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                        <h3 style={{ fontSize: '16px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <Zap size={18} color="#f59e0b" />
+                            Service Status
+                        </h3>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div style={{ padding: '16px', backgroundColor: 'rgba(16,185,129,0.05)', borderRadius: '12px', border: '1px solid rgba(16,185,129,0.1)' }}>
+                            <div style={{ fontSize: '11px', color: '#10b981', fontWeight: 700, marginBottom: '4px' }}>OPENROUTER</div>
+                            <div style={{ fontSize: '18px', fontWeight: 700 }}>OPERATIONAL</div>
+                        </div>
+                        <div style={{ padding: '16px', backgroundColor: 'rgba(16,185,129,0.05)', borderRadius: '12px', border: '1px solid rgba(16,185,129,0.1)' }}>
+                            <div style={{ fontSize: '11px', color: '#10b981', fontWeight: 700, marginBottom: '4px' }}>OPENAI WHISPER</div>
+                            <div style={{ fontSize: '18px', fontWeight: 700 }}>OPERATIONAL</div>
+                        </div>
+                    </div>
+                    <div style={{ marginTop: '20px', padding: '16px', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div style={{ fontSize: '11px', color: '#6b7280', fontWeight: 700, marginBottom: '8px' }}>QUICK ACTIONS</div>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button onClick={() => window.dispatchEvent(new CustomEvent('changeTab', { detail: 'ai-jobs' }))} style={{ ...styles.buttonSecondary, fontSize: '11px', flex: 1 }}>Job Queue</button>
+                            <button onClick={() => window.dispatchEvent(new CustomEvent('changeTab', { detail: 'clients' }))} style={{ ...styles.buttonSecondary, fontSize: '11px', flex: 1 }}>Manage Clients</button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     );
@@ -1484,7 +1784,7 @@ function TieredPricingCard({ title, value, onChange }: { title: string, value: a
 }
 
 
-function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | null; authFetch: (url: string, options?: RequestInit) => Promise<Response>; onClose: () => void; onSave: (data: any) => void }) {
+function ClientModal({ client, authFetch, onClose, onSave, saving }: { client: Client | null; authFetch: (url: string, options?: RequestInit) => Promise<Response>; onClose: () => void; onSave: (data: any) => void; saving: boolean }) {
     const today = new Date().toISOString().split('T')[0];
     const nextYear = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
@@ -1509,14 +1809,15 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
         provider_bal_openai: client?.provider_bal_openai || 0,
         provider_bal_openrouter: client?.provider_bal_openrouter || 0,
         provider_warn_threshold: client?.provider_warn_threshold || 25.0,
+        allow_rate_card_fetch: client?.allow_rate_card_fetch || 0,
     });
 
     // Auto-generate short_code if empty and name is typed
     useEffect(() => {
-        if (!client && !formData.short_code && formData.name.length >= 3) {
+        if (!formData.short_code && formData.name.length >= 3) {
             setFormData(prev => ({ ...prev, short_code: prev.name.substring(0, 3).toUpperCase() }));
         }
-    }, [formData.name, formData.short_code, client]);
+    }, [formData.name, formData.short_code]);
 
     return (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
@@ -1617,6 +1918,8 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
                             <option value="CREDIT">Credit System</option>
                         </select>
                     </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
                     <div>
                         <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
                             Maintenance Mode
@@ -1628,6 +1931,19 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
                         >
                             <option value={0}>Disabled (Online)</option>
                             <option value={1}>Enabled (Offline)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
+                            Allow Rate Card Sync
+                        </label>
+                        <select 
+                            value={formData.allow_rate_card_fetch} 
+                            onChange={(e) => setFormData({ ...formData, allow_rate_card_fetch: Number(e.target.value) })} 
+                            style={{ ...styles.input, backgroundColor: formData.allow_rate_card_fetch ? 'rgba(16, 185, 129, 0.1)' : 'rgba(10, 10, 15, 0.8)' }}
+                        >
+                            <option value={0}>Disabled (Hidden)</option>
+                            <option value={1}>Enabled (Public)</option>
                         </select>
                     </div>
                 </div>
@@ -1735,20 +2051,30 @@ function ClientModal({ client, authFetch, onClose, onSave }: { client: Client | 
 
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
                     <button onClick={onClose} style={{ ...styles.buttonSecondary }}>Cancel</button>
-                    <button onClick={() => onSave({
-                        ...formData,
-                        credits: isNaN(formData.credits) ? 0 : formData.credits,
-                        provider_bal_openai: isNaN(formData.provider_bal_openai) ? 0 : formData.provider_bal_openai,
-                        provider_bal_openrouter: isNaN(formData.provider_bal_openrouter) ? 0 : formData.provider_bal_openrouter,
-                        provider_warn_threshold: isNaN(formData.provider_warn_threshold) ? 2.5 : formData.provider_warn_threshold
-                    })} style={{ ...styles.button }} disabled={!formData.name}>{client ? 'Save Changes' : 'Create Client'}</button>
+                    <button 
+                        onClick={() => onSave({
+                            ...formData,
+                            credits: isNaN(formData.credits) ? 0 : formData.credits,
+                            provider_bal_openai: isNaN(formData.provider_bal_openai) ? 0 : formData.provider_bal_openai,
+                            provider_bal_openrouter: isNaN(formData.provider_bal_openrouter) ? 0 : formData.provider_bal_openrouter,
+                            provider_warn_threshold: isNaN(formData.provider_warn_threshold) ? 2.5 : formData.provider_warn_threshold
+                        })} 
+                        style={{ ...styles.button, opacity: (saving || !formData.name || !formData.short_code) ? 0.6 : 1, cursor: (saving || !formData.name || !formData.short_code) ? 'not-allowed' : 'pointer' }} 
+                        disabled={saving || !formData.name || !formData.short_code}
+                    >
+                        {saving ? '💾 Saving...' : (client ? 'Save Changes' : 'Create Client')}
+                    </button>
                 </div>
             </div>
         </div>
     );
 }
 
-function ConfigView({ clients, apiKeys, clientModels, availableModels, loading, onRefresh, onAddApiKey, onToggleApiKey, onDeleteApiKey, onSaveModel, clientCredentials, onSaveCredentials }: {
+function ConfigView({ 
+    clients, apiKeys, clientModels, availableModels, loading, onRefresh, 
+    onAddApiKey, onToggleApiKey, onDeleteApiKey, onSaveModel, clientCredentials, 
+    onSaveCredentials, globalDefaultModel, onSaveGlobalDefaultModel 
+}: {
     clients: Client[];
     apiKeys: Record<number, any[]>;
     clientModels: Record<number, any[]>;
@@ -1758,9 +2084,11 @@ function ConfigView({ clients, apiKeys, clientModels, availableModels, loading, 
     onAddApiKey: (clientId: number, provider: string, apiKey: string) => void;
     onToggleApiKey: (keyId: number, clientId: number) => void;
     onDeleteApiKey: (keyId: number, clientId: number) => void;
-    onSaveModel: (clientUUID: string, models: any[]) => void;
+    onSaveModel: (clientUUID: string, models: any[]) => Promise<void>;
     clientCredentials: Record<number, { supabase_url: string; supabase_anon_key: string }>;
-    onSaveCredentials: (clientId: number, supabaseUrl: string, supabaseAnonKey: string) => void;
+    onSaveCredentials: (clientId: number, credentials: any) => void;
+    globalDefaultModel: string;
+    onSaveGlobalDefaultModel: (model: string) => void;
 }) {
     const [selectedClient, setSelectedClient] = useState<number>(0);
     const [apiKeyForm, setApiKeyForm] = useState({ provider: 'openai', key: '' });
@@ -1851,7 +2179,7 @@ function ConfigView({ clients, apiKeys, clientModels, availableModels, loading, 
             const data = await res.json();
             if (res.ok) {
                 setCredsMessage({ type: 'success', text: 'Credentials saved!' });
-                onSaveCredentials(selectedClient, credsForm.supabaseUrl, credsForm.supabaseAnonKey);
+                onSaveCredentials(selectedClient, { supabase_url: credsForm.supabaseUrl, supabase_anon_key: credsForm.supabaseAnonKey });
                 setTimeout(() => setShowCredsForm(false), 1000);
             } else {
                 setCredsMessage({ type: 'error', text: data.error || 'Failed to save' });
@@ -1957,8 +2285,45 @@ function ConfigView({ clients, apiKeys, clientModels, availableModels, loading, 
         setPendingModelChanges({});
     };
 
+    const [localGlobalModel, setLocalGlobalModel] = useState(globalDefaultModel);
+
+    useEffect(() => {
+        setLocalGlobalModel(globalDefaultModel);
+    }, [globalDefaultModel]);
+
     return (
         <div>
+            {/* Global Fallback Setting */}
+            <div style={{ ...styles.card, marginBottom: '24px', border: '1px solid rgba(16,185,129,0.1)', background: 'linear-gradient(to right, rgba(16,185,129,0.03), transparent)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ fontSize: '18px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <Zap size={20} color="#10b981" />
+                        Global AI Fallback Model
+                    </h3>
+                    <span style={{ fontSize: '11px', color: '#6b7280', backgroundColor: 'rgba(255,255,255,0.05)', padding: '4px 10px', borderRadius: '12px' }}>System Policy</span>
+                </div>
+                <p style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '20px', maxWidth: '800px' }}>
+                    This model will be used as a last resort for any module that has no specific model configuration. 
+                    If this is empty, jobs with missing configurations will be <strong style={{ color: '#ef4444' }}>rejected</strong> with an error.
+                </p>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+                    <div style={{ flex: 1 }}>
+                        <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', marginBottom: '8px' }}>Fallback Model Identifier (OpenRouter)</label>
+                        <input 
+                            style={{ ...styles.input, width: '100%' }}
+                            placeholder="e.g. anthropic/claude-3.5-sonnet"
+                            value={localGlobalModel}
+                            onChange={(e) => setLocalGlobalModel(e.target.value)}
+                        />
+                    </div>
+                    <button 
+                        onClick={() => onSaveGlobalDefaultModel(localGlobalModel)}
+                        style={{ ...styles.button, padding: '12px 24px' }}
+                    >
+                        Update Global Policy
+                    </button>
+                </div>
+            </div>
             {balanceAlerts.length > 0 && (
                 <div style={{ marginBottom: '20px', padding: '12px', backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '8px' }}>
                     <div style={{ color: '#ef4444', fontSize: '13px', fontWeight: 600, marginBottom: '4px' }}>⚠️ Low Balance Alerts</div>
@@ -3824,6 +4189,8 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                     <th style={styles.th}>Local Job ID</th>
                                     <th style={styles.th}>Modules</th>
                                     <th style={styles.th}>Status</th>
+                                    <th style={styles.th}>File Duration</th>
+                                    <th style={styles.th}>AI Latency</th>
                                     <th style={styles.th}>Billed (USD)</th>
                                     {showProviderCosts && <th style={{ ...styles.th, color: '#f59e0b' }}>Provider (USD)</th>}
                                     <th style={styles.th}>Error</th>
@@ -3868,9 +4235,37 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                                     </div>
                                                 </td>
                                                 <td style={styles.td}>
-                                                    <span style={{ padding: '4px 10px', borderRadius: '9999px', fontSize: '11px', fontWeight: 600, backgroundColor: sc.bg, color: sc.text }}>
-                                                        {item.status}
-                                                    </span>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                        <span style={{ padding: '4px 10px', borderRadius: '9999px', fontSize: '11px', fontWeight: 600, backgroundColor: sc.bg, color: sc.text, width: 'fit-content' }}>
+                                                            {item.status}
+                                                        </span>
+                                                        {item.status === 'processing' && item.sub_status && (
+                                                            <div style={{ fontSize: '10px', color: '#3b82f6', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                                <span className="pulse-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#3b82f6' }} />
+                                                                {item.sub_status}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                                <td style={styles.td}>
+                                                    <div style={{ fontSize: '12px', fontWeight: 600, color: '#60a5fa' }}>
+                                                        {item.file_duration ? (() => {
+                                                            const d = item.file_duration;
+                                                            return d < 60 ? `${d}s` : `${Math.floor(d/60)}m ${Math.round(d%60)}s`;
+                                                        })() : '-'}
+                                                    </div>
+                                                </td>
+                                                <td style={styles.td}>
+                                                    <div style={{ fontSize: '12px', color: '#9ca3af', fontFamily: 'monospace' }}>
+                                                        {item.status === 'processing' || item.status === 'pending' ? '-' : (() => {
+                                                            const start = new Date(item.created_at.includes('Z') ? item.created_at : item.created_at + 'Z').getTime();
+                                                            const end = new Date(item.updated_at.includes('Z') ? item.updated_at : item.updated_at + 'Z').getTime();
+                                                            const s = Math.floor((end - start) / 1000);
+                                                            if (s < 0 || isNaN(s)) return '-';
+                                                            if (s < 60) return `${s}s`;
+                                                            return `${Math.floor(s/60)}m ${s%60}s`;
+                                                        })()}
+                                                    </div>
                                                 </td>
                                                 <td style={styles.td}>
                                                     <div style={{ fontSize: '13px', color: '#10b981', fontWeight: 600 }}>
