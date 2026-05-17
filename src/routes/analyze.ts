@@ -200,6 +200,45 @@ CRITERIA:
 
 Return ONLY a JSON object with a 'promo_breaks' key containing the final selected array of {{global_target}} items.`,
         userTemplate: "Select the top {{global_target}} highlights for the final edit from this list of candidates:\n\n{{candidates}}"
+    },
+    vision_ai: {
+        system: `You are an advanced Multi-Modal Visual Intelligence Assistant.
+Your task is to analyze the sequence of keyframe screenshots from a video along with their corresponding timecodes (seconds) and the dialogue transcript.
+Synthesize the visual progression, key events, shot changes, graphical inserts/text overlays, scene transitions, color palettes, and overall visual narrative.
+Return ONLY valid JSON matching this schema:
+{
+  "visual_narrative": "A detailed paragraph summarizing the visual storytelling, art style, editing rhythm, and pacing.",
+  "scene_breakdown": [
+    {
+      "start": 0.0,
+      "end": 30.0,
+      "setting": "Detailed description of the setting, lighting, camera angles, and atmosphere.",
+      "on_screen_text": "Any readable graphics, burned-in text, lower-thirds, or logos.",
+      "visual_description": "Comprehensive description of what physically happens and visual elements."
+    }
+  ],
+  "branding_and_graphics": [
+    {
+      "timecode": 5.2,
+      "type": "logo",
+      "description": "Details of the graphic, including colors, text content, placement on screen, and size."
+    }
+  ],
+  "visual_anomalies": [
+    {
+      "timecode": 45.0,
+      "type": "black-frame",
+      "severity": "low",
+      "description": "Description of the visual defect or anomaly."
+    }
+  ],
+  "production_aesthetics": {
+    "color_palette": ["Vibrant blue", "Warm amber", "Low contrast"],
+    "lighting_style": "Dramatic chiaroscuro / high-key / naturalistic",
+    "camera_techniques": ["Shallow depth of field", "Drone establishment shot", "Close-up cutaway"]
+  }
+}`,
+        userTemplate: "Analyze the following visual keyframes and transcript to generate a complete visual timeline:\n\nTranscript dialogue:\n{{transcript}}"
     }
 };
 
@@ -399,9 +438,27 @@ analyzeRouter.post('/analyze', licenseMiddleware, async (req: LicensedRequest, r
                 user: transcriptStr 
             };
 
+        let userMessageContent: any = userContent;
+        if (moduleName === 'vision_ai' || (body.images && Array.isArray(body.images))) {
+            const imageContents = (body.images as Array<{ timecode: number; base64: string }>) || [];
+            userMessageContent = [
+                { type: 'text', text: userContent }
+            ];
+            for (const img of imageContents) {
+                if (img.base64) {
+                    userMessageContent.push({
+                        type: 'image_url',
+                        image_url: {
+                            url: img.base64.startsWith('data:') ? img.base64 : `data:image/jpeg;base64,${img.base64}`
+                        }
+                    });
+                }
+            }
+        }
+
         const messages = [
             { role: 'system' as const, content: systemContent },
-            { role: 'user' as const, content: userContent }
+            { role: 'user' as const, content: userMessageContent }
         ];
 
         const aiClient = new OpenRouterClient({ apiKey });
@@ -544,16 +601,29 @@ analyzeRouter.post('/module/:moduleName', licenseMiddleware, async (req: License
         }
         // ---------------------------
 
-        // Build structured prompt parts for this module
-        // Build messages with proper role separation
-        // (Already declared above)
-
+        let userMessageContent: any = userContent;
+        if (moduleName === 'vision_ai' || (body.images && Array.isArray(body.images))) {
+            const imageContents = (body.images as Array<{ timecode: number; base64: string }>) || [];
+            userMessageContent = [
+                { type: 'text', text: userContent }
+            ];
+            for (const img of imageContents) {
+                if (img.base64) {
+                    userMessageContent.push({
+                        type: 'image_url',
+                        image_url: {
+                            url: img.base64.startsWith('data:') ? img.base64 : `data:image/jpeg;base64,${img.base64}`
+                        }
+                    });
+                }
+            }
+        }
 
         const aiClient = new OpenRouterClient({ apiKey });
         const result = await aiClient.completeWithRetry({
             messages: [
                 { role: 'system' as const, content: systemContent },
-                { role: 'user' as const, content: userContent }
+                { role: 'user' as const, content: userMessageContent }
             ],
             model: model,
             temperature: DEFAULT_TEMPERATURE,

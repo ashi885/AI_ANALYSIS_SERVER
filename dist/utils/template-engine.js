@@ -6,6 +6,38 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.renderTemplate = renderTemplate;
 const handlebars_1 = __importDefault(require("handlebars"));
 const sqlite_1 = require("../sqlite");
+// Register custom helpers
+handlebars_1.default.registerHelper('timecode', (seconds) => {
+    if (seconds === undefined || seconds === null)
+        return '00:00:00:00';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const f = Math.floor((seconds % 1) * 25); // Assuming 25fps default
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}:${f.toString().padStart(2, '0')}`;
+});
+handlebars_1.default.registerHelper('addOne', (value) => {
+    return (value || 0) + 1;
+});
+handlebars_1.default.registerHelper('formatSrtTime', (seconds) => {
+    if (seconds === undefined || seconds === null)
+        return '00:00:00,000';
+    const date = new Date(0);
+    date.setSeconds(seconds);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return date.toISOString().substr(11, 8) + ',' + ms.toString().padStart(3, '0');
+});
+handlebars_1.default.registerHelper('formatVttTime', (seconds) => {
+    if (seconds === undefined || seconds === null)
+        return '00:00:00.000';
+    const date = new Date(0);
+    date.setSeconds(seconds);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return date.toISOString().substr(11, 8) + '.' + ms.toString().padStart(3, '0');
+});
+handlebars_1.default.registerHelper('json', (context) => {
+    return JSON.stringify(context, null, 2);
+});
 /**
  * Universal Template Engine for Cuepoint Exports
  * Supports Handlebars templates stored in the database.

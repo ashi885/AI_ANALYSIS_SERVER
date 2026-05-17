@@ -7,7 +7,7 @@ export interface OpenRouterConfig {
 }
 
 export interface CompletionRequest {
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | any }>;
     model?: string;
     temperature?: number;
     maxTokens?: number;

@@ -380,6 +380,17 @@ function createTables() {
             value TEXT,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS export_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
+            module_name TEXT NOT NULL,
+            template_name TEXT NOT NULL,
+            template_content TEXT NOT NULL,
+            file_extension TEXT NOT NULL CHECK(file_extension IN ('xml', 'json', 'srt', 'vtt', 'txt')),
+            is_active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     `);
 
 
@@ -429,14 +440,27 @@ function createTables() {
 function seedDefaultData() {
     if (!db) return;
 
-    const adminExists = db.prepare('SELECT id FROM admin_users WHERE email = ?').get('admin');
+    // Seed admin with cuepoint2025 password
+    const adminExists = db.prepare('SELECT id FROM admin_users WHERE email = ? AND password = ?').get('admin', 'cuepoint2025');
     if (!adminExists) {
-        db.prepare('INSERT INTO admin_users (email, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint2025', 'admin');
+        db.prepare('INSERT OR REPLACE INTO admin_users (email, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint2025', 'admin');
+    }
+
+    // Seed admin with cuepoint-admin password to support unified credentials
+    const adminAltExists = db.prepare('SELECT id FROM admin_users WHERE email = ? AND password = ?').get('admin', 'cuepoint-admin');
+    if (!adminAltExists) {
+        db.prepare('INSERT OR IGNORE INTO admin_users (email, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint-admin', 'admin');
+    }
+
+    // Seed admin@cuepoint.com with cuepoint-admin
+    const adminEmailExists = db.prepare('SELECT id FROM admin_users WHERE email = ? AND password = ?').get('admin@cuepoint.com', 'cuepoint-admin');
+    if (!adminEmailExists) {
+        db.prepare('INSERT OR REPLACE INTO admin_users (email, password, role) VALUES (?, ?, ?)').run('admin@cuepoint.com', 'cuepoint-admin', 'admin');
     }
 
     const userExists = db.prepare('SELECT id FROM users WHERE email = ?').get('admin');
     if (!userExists) {
-        db.prepare('INSERT INTO users (email, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint2025', 'ADMIN');
+        db.prepare('INSERT INTO users (email, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint-admin', 'ADMIN');
         db.prepare('INSERT INTO users (email, password, role) VALUES (?, ?, ?)').run('user@cuepoint.com', 'cuepoint-user', 'USER');
     }
 
@@ -494,6 +518,16 @@ function seedDefaultData() {
         }
     } catch (e) {}
 
+    // Ensure vision_ai exists for existing databases
+    try {
+        const visionExists = db.prepare('SELECT id FROM available_models WHERE module_id = ?').get('vision_ai');
+        if (!visionExists) {
+            db.prepare('INSERT INTO available_models (module_id, provider, model_id, display_name) VALUES (?, ?, ?, ?)').run(
+                'vision_ai', 'openrouter', 'google/gemini-2.5-flash', 'Gemini 2.5 Flash'
+            );
+        }
+    } catch (e) {}
+
     // Ensure default pricing for subtitle_translation for all clients
     try {
         db.prepare(`
@@ -501,6 +535,72 @@ function seedDefaultData() {
             SELECT id, 'subtitle_translation', 0.015, '2025-01-01' FROM clients
         `).run();
     } catch (e) {}
+
+    // Ensure default pricing for vision_ai for all clients
+    try {
+        db.prepare(`
+            INSERT OR IGNORE INTO module_pricing (client_id, module_name, cost_per_job, effective_from)
+            SELECT id, 'vision_ai', 0.030, '2025-01-01' FROM clients
+        `).run();
+    } catch (e) {}
+
+    // Seed default export templates
+    try {
+        const templateCount = db.prepare("SELECT COUNT(*) as count FROM export_templates").get() as { count: number };
+        if (templateCount.count === 0) {
+            console.log('[SQLite] Seeding default export templates...');
+            
+            const defaultTemplates = [
+                {
+                    module_name: 'transcription',
+                    template_name: 'Default Transcription SRT',
+                    template_content: '{{#each subtitles}}\n{{addOne @index}}\n{{formatSrtTime start}} --> {{formatSrtTime end}}\n{{text}}\n\n{{/each}}',
+                    file_extension: 'srt'
+                },
+                {
+                    module_name: 'subtitles',
+                    template_name: 'Default Subtitles SRT',
+                    template_content: '{{#each subtitles}}\n{{addOne @index}}\n{{formatSrtTime start}} --> {{formatSrtTime end}}\n{{text}}\n\n{{/each}}',
+                    file_extension: 'srt'
+                },
+                {
+                    module_name: 'metadata',
+                    template_name: 'Default Metadata XML',
+                    template_content: '<?xml version="1.0" encoding="UTF-8"?>\n<metadata>\n    <content>\n        <title>{{title}}</title>\n        <description>{{description}}</description>\n        <summary>{{summary}}</summary>\n        <category>{{category}}</category>\n        <tags>\n            {{#each tags}}\n            <tag>{{this}}</tag>\n            {{/each}}\n        </tags>\n    </content>\n    <technical>\n        <duration>{{technical.duration}}</duration>\n        <fps>{{technical.fps}}</fps>\n        <resolution>{{technical.resolution}}</resolution>\n    </technical>\n</metadata>',
+                    file_extension: 'xml'
+                },
+                {
+                    module_name: 'ad_breaks',
+                    template_name: 'Default Ad Breaks XML',
+                    template_content: '<?xml version="1.0" encoding="UTF-8"?>\n<ad_breaks>\n    <breaks>\n        {{#each ad_breaks}}\n        <break index="{{addOne @index}}">\n            <timecode>{{timecode start}}</timecode>\n            <start>{{start}}</start>\n            <end>{{end}}</end>\n            <type>{{type}}</type>\n            <reason>{{reason}}</reason>\n            <confidence>{{confidence}}</confidence>\n        </break>\n        {{/each}}\n    </breaks>\n</ad_breaks>',
+                    file_extension: 'xml'
+                },
+                {
+                    module_name: 'promo_breaks',
+                    template_name: 'Default Viral Highlights XML',
+                    template_content: '<?xml version="1.0" encoding="UTF-8"?>\n<highlights>\n    <segments>\n        {{#each promo_breaks}}\n        <segment index="{{addOne @index}}">\n            <title>{{title}}</title>\n            <start_timecode>{{timecode start}}</start_timecode>\n            <end_timecode>{{timecode end}}</end_timecode>\n            <start>{{start}}</start>\n            <end>{{end}}</end>\n            <score>{{score}}</score>\n            <reason>{{reason}}</reason>\n            <social_hooks>\n                {{#each social_hooks}}\n                <hook>{{this}}</hook>\n                {{/each}}\n            </social_hooks>\n        </segment>\n        {{/each}}\n    </segments>\n</highlights>',
+                    file_extension: 'xml'
+                },
+                {
+                    module_name: 'subtitle_translation',
+                    template_name: 'Default Translation SRT',
+                    template_content: '{{#each subtitles}}\n{{addOne @index}}\n{{formatSrtTime start}} --> {{formatSrtTime end}}\n{{text}}\n\n{{/each}}',
+                    file_extension: 'srt'
+                }
+            ];
+
+            const insertStmt = db.prepare(`
+                INSERT INTO export_templates (client_id, module_name, template_name, template_content, file_extension, is_active)
+                VALUES (NULL, ?, ?, ?, ?, 1)
+            `);
+            
+            for (const t of defaultTemplates) {
+                insertStmt.run(t.module_name, t.template_name, t.template_content, t.file_extension);
+            }
+        }
+    } catch (seedErr: any) {
+        console.error('[SQLite] Failed to seed default export templates:', seedErr.message);
+    }
 
     try {
         db.prepare("ALTER TABLE ai_jobs ADD COLUMN audio_path TEXT").run();

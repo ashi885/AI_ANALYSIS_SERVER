@@ -1,6 +1,40 @@
 import Handlebars from 'handlebars';
 import { getDatabase } from '../sqlite';
 
+// Register custom helpers
+Handlebars.registerHelper('timecode', (seconds: number) => {
+    if (seconds === undefined || seconds === null) return '00:00:00:00';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const f = Math.floor((seconds % 1) * 25); // Assuming 25fps default
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}:${f.toString().padStart(2, '0')}`;
+});
+
+Handlebars.registerHelper('addOne', (value: number) => {
+    return (value || 0) + 1;
+});
+
+Handlebars.registerHelper('formatSrtTime', (seconds: number) => {
+    if (seconds === undefined || seconds === null) return '00:00:00,000';
+    const date = new Date(0);
+    date.setSeconds(seconds);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return date.toISOString().substr(11, 8) + ',' + ms.toString().padStart(3, '0');
+});
+
+Handlebars.registerHelper('formatVttTime', (seconds: number) => {
+    if (seconds === undefined || seconds === null) return '00:00:00.000';
+    const date = new Date(0);
+    date.setSeconds(seconds);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return date.toISOString().substr(11, 8) + '.' + ms.toString().padStart(3, '0');
+});
+
+Handlebars.registerHelper('json', (context: any) => {
+    return JSON.stringify(context, null, 2);
+});
+
 /**
  * Universal Template Engine for Cuepoint Exports
  * Supports Handlebars templates stored in the database.

@@ -328,10 +328,24 @@ exports.aiRouter.get('/job/:id', license_1.licenseMiddleware, async (req, res) =
         if (!job) {
             return res.status(404).json({ error: 'Job not found' });
         }
+        let queuePosition = null;
+        let etaMinutes = null;
+        if (job.queue_status === 'pending') {
+            const posRow = db.prepare(`
+                SELECT COUNT(*) as count 
+                FROM ai_jobs 
+                WHERE queue_status = 'pending' AND created_at <= ?
+            `).get(job.created_at);
+            queuePosition = posRow.count;
+            etaMinutes = queuePosition * 4;
+        }
         return res.json({
             id: job.id,
             status: job.queue_status === 'pending' ? 'pending' : job.status,
             queue_status: job.queue_status,
+            sub_status: job.sub_status,
+            queue_position: queuePosition,
+            eta_minutes: etaMinutes,
             modules_requested: JSON.parse(job.modules_requested),
             result_data: job.result_data ? JSON.parse(job.result_data) : null,
             total_cost_usd: job.total_cost_usd,

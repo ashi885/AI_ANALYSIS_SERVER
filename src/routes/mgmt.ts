@@ -1695,7 +1695,7 @@ mgmtRouter.get('/ai-queue', requireAdminAuth, async (req: Request, res: Response
         const db = getDatabase();
         let sql = `SELECT 
             j.id, j.client_id, j.status, j.queue_status, j.priority, j.sub_status, j.modules_requested, j.total_cost_usd, j.provider_cost_usd,
-            j.error_message, j.local_job_id, j.user_id, j.audio_path, j.result_data,
+            j.error_message, j.local_job_id, j.user_id, j.audio_path, j.result_data, j.file_duration,
             j.created_at, j.updated_at,
             c.name as client_name
         FROM ai_jobs j

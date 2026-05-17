@@ -193,6 +193,7 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
             });
             resultData.push({
                 moduleName: 'transcription',
+                module_name: 'transcription',
                 resultData: {
                     text: transcriptionResult.text,
                     segments: transcriptionResult.segments,
@@ -201,9 +202,20 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                     srt: formatAsSRT(transcriptionResult.segments || []),
                     vtt: formatAsVTT(transcriptionResult.segments || [])
                 },
+                result_data: {
+                    text: transcriptionResult.text,
+                    segments: transcriptionResult.segments,
+                    language: transcriptionResult.language || 'en',
+                    duration: transcriptionResult.duration || 0,
+                    srt: formatAsSRT(transcriptionResult.segments || []),
+                    vtt: formatAsVTT(transcriptionResult.segments || [])
+                },
                 processingTimeMs: processingTimeTranscription,
+                processing_time_ms: processingTimeTranscription,
                 apiCost: billablePriceTranscription,
-                providerCost: actualTranscriptionCost
+                api_cost: billablePriceTranscription,
+                providerCost: actualTranscriptionCost,
+                provider_cost: actualTranscriptionCost
             });
             successfulModules.push('transcription');
             // Auto-output transcription
@@ -216,21 +228,26 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
             logger_1.logger.ai('AI_TRANSCRIPTION_SKIPPED', `Job ${jobId} using existing transcription`, { clientId, jobId });
             resultData.push({
                 moduleName: 'transcription',
+                module_name: 'transcription',
                 resultData: existingResultsMap['transcription'],
+                result_data: existingResultsMap['transcription'],
                 processingTimeMs: 0,
+                processing_time_ms: 0,
                 apiCost: 0,
+                api_cost: 0,
                 providerCost: 0,
+                provider_cost: 0,
                 reused: true
             });
             successfulModules.push('transcription');
             // Get transcription from existing results for other modules
-            transcriptionResult = { text: existingResultsMap['transcription'].text || '' };
+            transcriptionResult = existingResultsMap['transcription'];
         }
         // Get transcription text for other modules
         if (!transcriptionResult && modulesRequested.some((m) => m !== 'transcription')) {
             // Priority 1: Check existing results within the current job 
             if (existingResultsMap['transcription']) {
-                transcriptionResult = { text: existingResultsMap['transcription'].text || '' };
+                transcriptionResult = existingResultsMap['transcription'];
             }
             // Priority 2: Fallback - Check siblings (other jobs for the same asset)
             else if (job === null || job === void 0 ? void 0 : job.local_job_id) {
@@ -273,6 +290,21 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                 throw new Error('Transcription required but not available. Please run transcription first.');
             }
         }
+        // Dynamically update file_duration column if it is currently 0 or null
+        const activeDuration = (transcriptionResult === null || transcriptionResult === void 0 ? void 0 : transcriptionResult.duration) || durationRequested || 0;
+        if (activeDuration > 0) {
+            durationRequested = activeDuration;
+            try {
+                const currentJob = db.prepare('SELECT file_duration FROM ai_jobs WHERE id = ?').get(jobId);
+                if (!currentJob || !currentJob.file_duration || currentJob.file_duration === 0) {
+                    db.prepare('UPDATE ai_jobs SET file_duration = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(activeDuration, jobId);
+                    logger_1.logger.info('AI', 'DURATION_UPDATED', `Updated file_duration for Job ${jobId} to ${activeDuration} seconds`);
+                }
+            }
+            catch (err) {
+                logger_1.logger.error('AI', 'DURATION_UPDATE_FAILED', `Failed to update file_duration in DB: ${err.message}`);
+            }
+        }
         // Add subtitles - skip if already exists
         if (modulesRequested.includes('subtitles') && !existingResultsMap['subtitles']) {
             updateSubStatus('Generating subtitles...');
@@ -309,15 +341,25 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
             });
             resultData.push({
                 moduleName: 'subtitles',
+                module_name: 'subtitles',
                 resultData: {
                     segments: (transcriptionResult === null || transcriptionResult === void 0 ? void 0 : transcriptionResult.segments) || [],
                     srt: formatAsSRT((transcriptionResult === null || transcriptionResult === void 0 ? void 0 : transcriptionResult.segments) || []),
                     vtt: formatAsVTT((transcriptionResult === null || transcriptionResult === void 0 ? void 0 : transcriptionResult.segments) || []),
                     language: (transcriptionResult === null || transcriptionResult === void 0 ? void 0 : transcriptionResult.language) || 'en'
                 },
+                result_data: {
+                    segments: (transcriptionResult === null || transcriptionResult === void 0 ? void 0 : transcriptionResult.segments) || [],
+                    srt: formatAsSRT((transcriptionResult === null || transcriptionResult === void 0 ? void 0 : transcriptionResult.segments) || []),
+                    vtt: formatAsVTT((transcriptionResult === null || transcriptionResult === void 0 ? void 0 : transcriptionResult.segments) || []),
+                    language: (transcriptionResult === null || transcriptionResult === void 0 ? void 0 : transcriptionResult.language) || 'en'
+                },
                 processingTimeMs: 0,
+                processing_time_ms: 0,
                 apiCost: billablePriceSubs,
-                providerCost: 0
+                api_cost: billablePriceSubs,
+                providerCost: 0,
+                provider_cost: 0
             });
             successfulModules.push('subtitles');
             // Auto-output subtitles (SRT)
@@ -331,10 +373,15 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
         else if (existingResultsMap['subtitles']) {
             resultData.push({
                 moduleName: 'subtitles',
+                module_name: 'subtitles',
                 resultData: existingResultsMap['subtitles'],
+                result_data: existingResultsMap['subtitles'],
                 processingTimeMs: 0,
+                processing_time_ms: 0,
                 apiCost: 0,
+                api_cost: 0,
                 providerCost: 0,
+                provider_cost: 0,
                 reused: true
             });
             successfulModules.push('subtitles');
@@ -527,7 +574,7 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                                     const chunk = chunksToProcess[i];
                                     const result = await callAI(suffixedModuleName, chunk.text, {
                                         target_language: lang,
-                                        _isFirstCall: i === 0 && translationResults.length === 0,
+                                        _isFirstCall: i === 0,
                                         _billablePrice: billablePrice,
                                         formatting_instructions: "MAXIMUM 50 CHARACTERS PER SEGMENT. Splitting segments if necessary to fit."
                                     });
@@ -548,8 +595,16 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                                 }
                                 translationResults.push({
                                     module_name: 'subtitle_translation',
+                                    moduleName: 'subtitle_translation',
                                     result_type: `subtitle_${normalizedTarget}`,
+                                    resultType: `subtitle_${normalizedTarget}`,
                                     result_data: {
+                                        language: lang,
+                                        segments: allTranslatedSegments,
+                                        srt: formatAsSRT(allTranslatedSegments),
+                                        vtt: formatAsVTT(allTranslatedSegments)
+                                    },
+                                    resultData: {
                                         language: lang,
                                         segments: allTranslatedSegments,
                                         srt: formatAsSRT(allTranslatedSegments),
@@ -557,8 +612,11 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                                     },
                                     model: model,
                                     processing_time_ms: totalLatency,
+                                    processingTimeMs: totalLatency,
                                     api_cost: billablePrice,
-                                    provider_cost: totalCost
+                                    apiCost: billablePrice,
+                                    provider_cost: totalCost,
+                                    providerCost: totalCost
                                 });
                                 if (!successfulModules.includes('subtitle_translation')) {
                                     successfulModules.push('subtitle_translation');
@@ -578,8 +636,16 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                                 logger_1.logger.error('AI', 'TRANSLATION_LANG_FAILED', `Translation to ${lang} failed for job ${jobId}: ${langErr.message}`);
                                 translationResults.push({
                                     module_name: 'subtitle_translation',
+                                    moduleName: 'subtitle_translation',
                                     result_type: `subtitle_${normalizedTarget}`,
+                                    resultType: `subtitle_${normalizedTarget}`,
                                     result_data: {
+                                        language: lang,
+                                        segments: allTranslatedSegments,
+                                        error: langErr.message,
+                                        partial: true
+                                    },
+                                    resultData: {
                                         language: lang,
                                         segments: allTranslatedSegments,
                                         error: langErr.message,
@@ -587,8 +653,11 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                                     },
                                     model: model,
                                     processing_time_ms: totalLatency,
+                                    processingTimeMs: totalLatency,
                                     api_cost: 0,
-                                    provider_cost: totalCost
+                                    apiCost: 0,
+                                    provider_cost: totalCost,
+                                    providerCost: totalCost
                                 });
                                 if (!failedModules.includes('subtitle_translation')) {
                                     failedModules.push('subtitle_translation');
@@ -723,12 +792,18 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                         await saveToOutput(moduleName, finalResultData, 'json', moduleSuffixMap[moduleName]);
                         return {
                             module_name: moduleName,
-                            result_type: moduleName, // Essential for Watcher/UI mapping
+                            moduleName: moduleName,
+                            result_type: moduleName,
+                            resultType: moduleName,
                             result_data: finalResultData,
+                            resultData: finalResultData,
                             model: model,
                             processing_time_ms: totalModuleLatency,
+                            processingTimeMs: totalModuleLatency,
                             api_cost: billablePrice,
-                            provider_cost: totalModuleProviderCost
+                            apiCost: billablePrice,
+                            provider_cost: totalModuleProviderCost,
+                            providerCost: totalModuleProviderCost
                         };
                     }
                     catch (err) {
@@ -739,8 +814,15 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                         failedModules.push(moduleName);
                         return {
                             module_name: moduleName,
+                            moduleName: moduleName,
                             result_data: { error: sanitizedError },
-                            processing_time_ms: 0, api_cost: 0, provider_cost: 0
+                            resultData: { error: sanitizedError },
+                            processing_time_ms: 0,
+                            processingTimeMs: 0,
+                            api_cost: 0,
+                            apiCost: 0,
+                            provider_cost: 0,
+                            providerCost: 0
                         };
                     }
                 });
@@ -761,11 +843,17 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                     const isSubtitle = key.startsWith('subtitle_');
                     resultData.push({
                         module_name: isSubtitle ? 'subtitle_translation' : key,
+                        moduleName: isSubtitle ? 'subtitle_translation' : key,
                         result_type: isSubtitle ? key : key,
+                        resultType: isSubtitle ? key : key,
                         result_data: data,
+                        resultData: data,
                         processing_time_ms: 0,
+                        processingTimeMs: 0,
                         api_cost: 0,
+                        apiCost: 0,
                         provider_cost: 0,
+                        providerCost: 0,
                         reused: true
                     });
                 }
@@ -773,8 +861,8 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
             // --- SYNC INCREMENTAL RESULTS ---
             // Update the database with whatever we have so far
             // This allows the client to see progress mid-job
-            const currentBilled = resultData.reduce((sum, r) => sum + (r.api_cost || 0), 0);
-            const currentProvider = resultData.reduce((sum, r) => sum + (r.provider_cost || 0), 0);
+            const currentBilled = resultData.reduce((sum, r) => { var _a, _b; return sum + ((_b = (_a = r.api_cost) !== null && _a !== void 0 ? _a : r.apiCost) !== null && _b !== void 0 ? _b : 0); }, 0);
+            const currentProvider = resultData.reduce((sum, r) => { var _a, _b; return sum + ((_b = (_a = r.provider_cost) !== null && _a !== void 0 ? _a : r.providerCost) !== null && _b !== void 0 ? _b : 0); }, 0);
             db.prepare('UPDATE ai_jobs SET result_data = ?, total_cost_usd = ?, provider_cost_usd = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(JSON.stringify(resultData), currentBilled, currentProvider, jobId);
             logger_1.logger.info('AI', 'JOB_PROGRESS_SYNC', `Synced incremental results for Job ${jobId} (${resultData.length} modules completed)`);
         }
@@ -783,8 +871,8 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
         // Ensure we don't accidentally wipe out costs from a previous partial run if this was a rerun
         // by calculating the final billed cost as a sum of all current result items
         // ALSO: sync with ai_job_queue to include any async modules
-        let absoluteTotalBilled = resultData.reduce((sum, r) => sum + (r.api_cost || 0), 0);
-        let absoluteTotalProvider = resultData.reduce((sum, r) => sum + (r.provider_cost || 0), 0);
+        let absoluteTotalBilled = resultData.reduce((sum, r) => { var _a, _b; return sum + ((_b = (_a = r.api_cost) !== null && _a !== void 0 ? _a : r.apiCost) !== null && _b !== void 0 ? _b : 0); }, 0);
+        let absoluteTotalProvider = resultData.reduce((sum, r) => { var _a, _b; return sum + ((_b = (_a = r.provider_cost) !== null && _a !== void 0 ? _a : r.providerCost) !== null && _b !== void 0 ? _b : 0); }, 0);
         try {
             const queueCosts = db.prepare(`
                 SELECT SUM(billed_cost) as total_billed, SUM(provider_cost) as total_provider

@@ -1024,6 +1024,16 @@ const ProviderBillingView = ({ billing, loading, onRefresh, authFetch, openaiTot
     const accountBalanceEntry = Array.isArray(billing) ? billing.find(b => b.source === 'management_key' && b.account_balance !== null) : null;
     const accountBalance = accountBalanceEntry?.account_balance;
 
+    const totalLocalMtd = Array.isArray(billing) ? billing.reduce((sum, item) => sum + (Number(item.local_mtd) || 0), 0) : 0;
+    const totalRemainingCredits = Array.isArray(billing) ? billing.reduce((sum, item) => {
+        if (item.limit_remaining !== null && item.limit_remaining !== undefined && typeof item.limit_remaining === 'number') {
+            return sum + item.limit_remaining;
+        }
+        return sum;
+    }, 0) : 0;
+    const activeKeysCount = Array.isArray(billing) ? billing.filter(item => !item.disabled && !item.error).length : 0;
+    const keyErrorsCount = Array.isArray(billing) ? billing.filter(item => item.error).length : 0;
+
     // Helper to safely render potential objects from API errors
     const safeRender = (val: any) => {
         if (!val) return null;
@@ -1189,155 +1199,255 @@ const ProviderBillingView = ({ billing, loading, onRefresh, authFetch, openaiTot
                     <div style={{ color: '#6b7280', fontSize: '14px', fontWeight: 500 }}>Polling provider telemetry...</div>
                 </div>
             ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: '24px' }}>
-                    {Array.isArray(billing) && billing.map((item, idx) => (
-                        <div key={idx} style={{ 
-                            ...styles.card, 
-                            margin: 0, 
-                            position: 'relative', 
-                            overflow: 'hidden',
-                            border: item.error ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(255,255,255,0.07)',
-                            backgroundColor: item.error ? 'rgba(239, 68, 68, 0.03)' : 'rgba(17,17,24,0.8)',
-                            backdropFilter: 'blur(10px)',
-                            transition: 'transform 0.2s, box-shadow 0.2s',
-                            cursor: 'default'
-                        }}
-                        className="hover:bg-white/[0.02]"
-                        >
-                            <div style={{ position: 'relative', zIndex: 1 }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
-                                    <div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                                            <span style={{ 
-                                                fontSize: '10px', 
-                                                padding: '3px 8px', 
-                                                borderRadius: '6px', 
-                                                backgroundColor: item.provider === 'openai' ? 'rgba(16,185,129,0.15)' : 'rgba(124, 58, 237, 0.15)',
-                                                color: item.provider === 'openai' ? '#10b981' : '#a78bfa',
-                                                fontWeight: 800,
-                                                textTransform: 'uppercase',
-                                                letterSpacing: '0.05em'
-                                            }}>
-                                                {item.provider}
-                                            </span>
-                                            {item.source === 'management_key' && (
-                                                <span style={{ fontSize: '10px', color: '#6b7280', display: 'flex', alignItems: 'center', gap: '4px', backgroundColor: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }}>
-                                                    <Activity size={10} /> Sync Active
-                                                </span>
-                                            )}
-                                        </div>
-                                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#fff', letterSpacing: '-0.01em' }}>
-                                            {item.client_name}
-                                            {item.matched_client && item.matched_client !== item.client_name && (
-                                                <span style={{ fontSize: '13px', color: '#6b7280', fontWeight: 400, marginLeft: '8px' }}>
-                                                    ({item.matched_client})
-                                                </span>
-                                            )}
-                                        </div>
-                                        <div style={{ fontSize: '12px', color: '#4b5563', fontFamily: 'monospace', marginTop: '6px', backgroundColor: 'rgba(0,0,0,0.2)', padding: '4px 8px', borderRadius: '6px', display: 'inline-block' }}>
-                                            {item.api_key_label || item.api_key_hash?.substring(0, 16) + '...'}
-                                        </div>
-                                    </div>
-                                    <div style={{ 
-                                        width: '44px',
-                                        height: '44px',
-                                        borderRadius: '12px', 
-                                        backgroundColor: 'rgba(255,255,255,0.03)',
-                                        border: '1px solid rgba(255,255,255,0.08)',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
-                                    }}>
-                                        {item.provider === 'openai' ? <Zap size={22} color="#10b981" /> : <Cpu size={22} color="#7c3aed" />}
-                                    </div>
-                                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
+                    {/* 1. Consolidated Summary Stats Cards */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                        <div style={styles.statCard}>
+                            <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Total Local MTD Usage</div>
+                            <div style={{ fontSize: '24px', fontWeight: 700 }}>${totalLocalMtd.toFixed(3)}</div>
+                        </div>
+                        <div style={styles.statCard}>
+                            <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Remaining Shared Limits</div>
+                            <div style={{ fontSize: '24px', fontWeight: 700 }}>
+                                <PrivateValue value={totalRemainingCredits.toFixed(2)} />
+                            </div>
+                        </div>
+                        <div style={styles.statCard}>
+                            <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Active API Sub-Keys</div>
+                            <div style={{ fontSize: '24px', fontWeight: 700 }}>{activeKeysCount} / {billing.length}</div>
+                        </div>
+                        <div style={{
+                            ...styles.statCard,
+                            borderColor: keyErrorsCount > 0 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(255,255,255,0.05)',
+                            backgroundColor: keyErrorsCount > 0 ? 'rgba(239, 68, 68, 0.05)' : '#111118'
+                        }}>
+                            <div style={{ fontSize: '11px', color: keyErrorsCount > 0 ? '#ef4444' : '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>API Configurations Alerts</div>
+                            <div style={{ fontSize: '24px', fontWeight: 700, color: keyErrorsCount > 0 ? '#ef4444' : '#fff' }}>{keyErrorsCount} {keyErrorsCount > 0 ? '⚠️' : '✓'}</div>
+                        </div>
+                    </div>
 
-                                {item.error ? (
-                                    <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.08)', borderRadius: '12px', padding: '16px', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
-                                        <div style={{ fontSize: '13px', color: '#f87171', display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                                            <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
-                                            <span>{safeRender(item.error)}</span>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                                        {/* Main Stats Grid */}
-                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                                            <div style={{ padding: '16px', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                                                <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em', marginBottom: '8px' }}>Local Usage (MTD)</div>
-                                                <div style={{ fontSize: '24px', fontWeight: 800, color: '#fff' }}>${Number(item.local_mtd || 0).toFixed(3)}</div>
+                    {/* 2. Consolidated Provider Billing Table */}
+                    <div style={styles.card}>
+                        <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '20px' }}>🏦 API Provider Billing Summary</h3>
+                        <table style={styles.table}>
+                            <thead>
+                                <tr>
+                                    <th style={styles.th}>Provider</th>
+                                    <th style={styles.th}>Sub-Account / Key Label</th>
+                                    <th style={styles.th}>Associated Client</th>
+                                    <th style={styles.th}>Local MTD Usage</th>
+                                    <th style={styles.th}>Remaining Credit</th>
+                                    <th style={styles.th}>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {Array.isArray(billing) && billing.map((item, idx) => {
+                                    const statusColor = item.error ? '#ef4444' : item.disabled ? '#ef4444' : (item.limit_remaining !== null && item.limit_remaining < 5) ? '#f59e0b' : '#10b981';
+                                    const statusText = item.error ? 'Error' : item.disabled ? 'Suspended' : (item.limit_remaining !== null && item.limit_remaining < 5) ? 'Low Credit' : 'Healthy';
+                                    return (
+                                        <tr key={idx}>
+                                            <td style={styles.td}>
+                                                <span style={{ 
+                                                    fontSize: '10px', 
+                                                    padding: '3px 8px', 
+                                                    borderRadius: '6px', 
+                                                    backgroundColor: item.provider === 'openai' ? 'rgba(16,185,129,0.15)' : 'rgba(124, 58, 237, 0.15)',
+                                                    color: item.provider === 'openai' ? '#10b981' : '#a78bfa',
+                                                    fontWeight: 800,
+                                                    textTransform: 'uppercase',
+                                                    letterSpacing: '0.05em'
+                                                }}>
+                                                    {item.provider}
+                                                </span>
+                                            </td>
+                                            <td style={styles.td}>
+                                                <span style={{ fontFamily: 'monospace', fontSize: '12px', color: '#fff' }}>
+                                                    {item.api_key_label || (item.api_key_hash ? item.api_key_hash.substring(0, 16) + '...' : 'System Key')}
+                                                </span>
+                                            </td>
+                                            <td style={styles.td}>
+                                                <div style={{ fontWeight: 600, color: '#fff' }}>
+                                                    {item.client_name}
+                                                </div>
+                                            </td>
+                                            <td style={styles.td}>
+                                                <span style={{ fontWeight: 600, color: '#10b981' }}>
+                                                    ${Number(item.local_mtd || 0).toFixed(3)}
+                                                </span>
+                                            </td>
+                                            <td style={styles.td}>
+                                                <span style={{ color: item.limit_remaining === null ? '#9ca3af' : '#10b981', fontWeight: 600 }}>
+                                                    {item.limit_remaining !== null ? (
+                                                        <PrivateValue value={Number(item.limit_remaining).toFixed(2)} />
+                                                    ) : 'UNLIMITED'}
+                                                </span>
+                                            </td>
+                                            <td style={styles.td}>
+                                                <span style={{ ...styles.badge, backgroundColor: `${statusColor}20`, color: statusColor }}>
+                                                    {statusText}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {/* 3. Detailed Sub-Key Configuration Cards */}
+                    <div>
+                        <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '20px' }}>🔍 Detailed Sub-Key Telemetry</h3>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: '24px' }}>
+                            {Array.isArray(billing) && billing.map((item, idx) => (
+                                <div key={idx} style={{ 
+                                    ...styles.card, 
+                                    margin: 0, 
+                                    position: 'relative', 
+                                    overflow: 'hidden',
+                                    border: item.error ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(255,255,255,0.07)',
+                                    backgroundColor: item.error ? 'rgba(239, 68, 68, 0.03)' : 'rgba(17,17,24,0.8)',
+                                    backdropFilter: 'blur(10px)',
+                                    transition: 'transform 0.2s, box-shadow 0.2s',
+                                    cursor: 'default'
+                                }}
+                                className="hover:bg-white/[0.02]"
+                                >
+                                    <div style={{ position: 'relative', zIndex: 1 }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+                                            <div>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                                    <span style={{ 
+                                                        fontSize: '10px', 
+                                                        padding: '3px 8px', 
+                                                        borderRadius: '6px', 
+                                                        backgroundColor: item.provider === 'openai' ? 'rgba(16,185,129,0.15)' : 'rgba(124, 58, 237, 0.15)',
+                                                        color: item.provider === 'openai' ? '#10b981' : '#a78bfa',
+                                                        fontWeight: 800,
+                                                        textTransform: 'uppercase',
+                                                        letterSpacing: '0.05em'
+                                                    }}>
+                                                        {item.provider}
+                                                    </span>
+                                                    {item.source === 'management_key' && (
+                                                        <span style={{ fontSize: '10px', color: '#6b7280', display: 'flex', alignItems: 'center', gap: '4px', backgroundColor: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }}>
+                                                            <Activity size={10} /> Sync Active
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div style={{ fontSize: '20px', fontWeight: 700, color: '#fff', letterSpacing: '-0.01em' }}>
+                                                    {item.client_name}
+                                                    {item.matched_client && item.matched_client !== item.client_name && (
+                                                        <span style={{ fontSize: '13px', color: '#6b7280', fontWeight: 400, marginLeft: '8px' }}>
+                                                            ({item.matched_client})
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div style={{ fontSize: '12px', color: '#4b5563', fontFamily: 'monospace', marginTop: '6px', backgroundColor: 'rgba(0,0,0,0.2)', padding: '4px 8px', borderRadius: '6px', display: 'inline-block' }}>
+                                                    {item.api_key_label || item.api_key_hash?.substring(0, 16) + '...'}
+                                                </div>
                                             </div>
-                                            <div style={{ padding: '16px', backgroundColor: 'rgba(16,185,129,0.03)', borderRadius: '14px', border: '1px solid rgba(16,185,129,0.1)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                                                <div>
-                                                    <div style={{ fontSize: '11px', color: '#10b981', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em', marginBottom: '8px' }}>Available Credit</div>
-                                                    <div style={{ fontSize: '24px', fontWeight: 800, color: '#10b981' }}>
-                                                        {item.limit_remaining !== null ? (
-                                                            <PrivateValue value={Number(item.limit_remaining).toFixed(2)} />
-                                                        ) : 'UNLIMITED'}
+                                            <div style={{ 
+                                                width: '44px',
+                                                height: '44px',
+                                                borderRadius: '12px', 
+                                                backgroundColor: 'rgba(255,255,255,0.03)',
+                                                border: '1px solid rgba(255,255,255,0.08)',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+                                            }}>
+                                                {item.provider === 'openai' ? <Zap size={22} color="#10b981" /> : <Cpu size={22} color="#7c3aed" />}
+                                            </div>
+                                        </div>
+
+                                        {item.error ? (
+                                            <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.08)', borderRadius: '12px', padding: '16px', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+                                                <div style={{ fontSize: '13px', color: '#f87171', display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                                                    <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+                                                    <span>{safeRender(item.error)}</span>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                                                {/* Main Stats Grid */}
+                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                                                    <div style={{ padding: '16px', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                                        <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em', marginBottom: '8px' }}>Local Usage (MTD)</div>
+                                                        <div style={{ fontSize: '24px', fontWeight: 800, color: '#fff' }}>${Number(item.local_mtd || 0).toFixed(3)}</div>
+                                                    </div>
+                                                    <div style={{ padding: '16px', backgroundColor: 'rgba(16,185,129,0.03)', borderRadius: '14px', border: '1px solid rgba(16,185,129,0.1)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                                                        <div>
+                                                            <div style={{ fontSize: '11px', color: '#10b981', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em', marginBottom: '8px' }}>Available Credit</div>
+                                                            <div style={{ fontSize: '24px', fontWeight: 800, color: '#10b981' }}>
+                                                                {item.limit_remaining !== null ? (
+                                                                    <PrivateValue value={Number(item.limit_remaining).toFixed(2)} />
+                                                                ) : 'UNLIMITED'}
+                                                            </div>
+                                                        </div>
+                                                        {((item.limit_remaining !== null && accountBalance !== null && accountBalance !== undefined && item.limit_remaining > accountBalance) || (item.limit_remaining === null && accountBalance !== null && accountBalance !== undefined && accountBalance < 10.0)) && (
+                                                            <div style={{ 
+                                                                marginTop: '8px', 
+                                                                fontSize: '10px', 
+                                                                color: '#f87171', 
+                                                                backgroundColor: 'rgba(239, 68, 68, 0.12)', 
+                                                                padding: '6px 8px', 
+                                                                borderRadius: '6px',
+                                                                border: '1px solid rgba(239, 68, 68, 0.25)',
+                                                                fontWeight: 600,
+                                                                lineHeight: '1.2'
+                                                            }}>
+                                                                ⚠️ Shared Master Balance Low (${Number(accountBalance).toFixed(2)})
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 </div>
-                                                {((item.limit_remaining !== null && accountBalance !== null && accountBalance !== undefined && item.limit_remaining > accountBalance) || (item.limit_remaining === null && accountBalance !== null && accountBalance !== undefined && accountBalance < 10.0)) && (
-                                                    <div style={{ 
-                                                        marginTop: '8px', 
-                                                        fontSize: '10px', 
-                                                        color: '#f87171', 
-                                                        backgroundColor: 'rgba(239, 68, 68, 0.12)', 
-                                                        padding: '6px 8px', 
-                                                        borderRadius: '6px',
-                                                        border: '1px solid rgba(239, 68, 68, 0.25)',
-                                                        fontWeight: 600,
-                                                        lineHeight: '1.2'
-                                                    }}>
-                                                        ⚠️ Shared Master Balance Low (${Number(accountBalance).toFixed(2)})
+
+                                                {/* Progress Bar for Limits */}
+                                                {item.limit && item.limit > 0 && (
+                                                    <div style={{ backgroundColor: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '10px' }}>
+                                                            <span style={{ color: '#9ca3af', fontWeight: 500 }}>Consumption of ${item.limit} Threshold</span>
+                                                            <span style={{ color: '#fff', fontWeight: 700 }}>{Math.round((item.usage_total / item.limit) * 100)}%</span>
+                                                        </div>
+                                                        <div style={{ height: '8px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '4px', overflow: 'hidden' }}>
+                                                            <div style={{ 
+                                                                height: '100%', 
+                                                                width: `${Math.min(100, (item.usage_total / item.limit) * 100)}%`, 
+                                                                backgroundColor: (item.usage_total / item.limit) > 0.85 ? '#ef4444' : '#10b981',
+                                                                boxShadow: (item.usage_total / item.limit) > 0.85 ? '0 0 10px rgba(239,68,68,0.5)' : 'none',
+                                                                transition: 'width 1.5s cubic-bezier(0.4, 0, 0.2, 1)'
+                                                            }} />
+                                                        </div>
                                                     </div>
                                                 )}
-                                            </div>
-                                        </div>
 
-                                        {/* Progress Bar for Limits */}
-                                        {item.limit && item.limit > 0 && (
-                                            <div style={{ backgroundColor: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '10px' }}>
-                                                    <span style={{ color: '#9ca3af', fontWeight: 500 }}>Consumption of ${item.limit} Threshold</span>
-                                                    <span style={{ color: '#fff', fontWeight: 700 }}>{Math.round((item.usage_total / item.limit) * 100)}%</span>
-                                                </div>
-                                                <div style={{ height: '8px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '4px', overflow: 'hidden' }}>
-                                                    <div style={{ 
-                                                        height: '100%', 
-                                                        width: `${Math.min(100, (item.usage_total / item.limit) * 100)}%`, 
-                                                        backgroundColor: (item.usage_total / item.limit) > 0.85 ? '#ef4444' : '#10b981',
-                                                        boxShadow: (item.usage_total / item.limit) > 0.85 ? '0 0 10px rgba(239,68,68,0.5)' : 'none',
-                                                        transition: 'width 1.5s cubic-bezier(0.4, 0, 0.2, 1)'
-                                                    }} />
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                                                    <div style={{ fontSize: '11px', color: '#4b5563', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                        <Clock size={12} />
+                                                        Updated {new Date(item.last_updated).toLocaleTimeString()}
+                                                    </div>
+                                                    <div style={{ display: 'flex', gap: '16px' }}>
+                                                        {item.disabled && (
+                                                            <span style={{ fontSize: '10px', color: '#ef4444', fontWeight: 800, letterSpacing: '0.05em' }}>SUSPENDED</span>
+                                                        )}
+                                                        <a 
+                                                            href={item.provider === 'openai' ? 'https://platform.openai.com/usage' : 'https://openrouter.ai/activity'} 
+                                                            target="_blank" 
+                                                            rel="noreferrer"
+                                                            style={{ fontSize: '11px', color: '#10b981', textDecoration: 'none', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}
+                                                        >
+                                                            EXPLORE <ExternalLink size={12} />
+                                                        </a>
+                                                    </div>
                                                 </div>
                                             </div>
                                         )}
-
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                                            <div style={{ fontSize: '11px', color: '#4b5563', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                <Clock size={12} />
-                                                Updated {new Date(item.last_updated).toLocaleTimeString()}
-                                            </div>
-                                            <div style={{ display: 'flex', gap: '16px' }}>
-                                                {item.disabled && (
-                                                    <span style={{ fontSize: '10px', color: '#ef4444', fontWeight: 800, letterSpacing: '0.05em' }}>SUSPENDED</span>
-                                                )}
-                                                <a 
-                                                    href={item.provider === 'openai' ? 'https://platform.openai.com/usage' : 'https://openrouter.ai/activity'} 
-                                                    target="_blank" 
-                                                    rel="noreferrer"
-                                                    style={{ fontSize: '11px', color: '#10b981', textDecoration: 'none', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}
-                                                >
-                                                    EXPLORE <ExternalLink size={12} />
-                                                </a>
-                                            </div>
-                                        </div>
                                     </div>
-                                )}
-                            </div>
+                                </div>
+                            ))}
                         </div>
-                    ))}
+                    </div>
                 </div>
             )}
             
@@ -2503,7 +2613,7 @@ function ConfigView({
         setAiSettingsLoading(true);
         setAiSettingsMessage(null);
         try {
-            const res = await fetch(`/api/mgmt/clients/${clientId}/ai-settings`, {
+            const res = await authFetch(`/api/mgmt/clients/${clientId}/ai-settings`, {
                 credentials: 'include'
             });
             if (res.ok) {
@@ -2539,7 +2649,7 @@ function ConfigView({
         setAiSettingsSaving(true);
         setAiSettingsMessage(null);
         try {
-            const res = await fetch(`/api/mgmt/clients/${selectedClient}/ai-settings`, {
+            const res = await authFetch(`/api/mgmt/clients/${selectedClient}/ai-settings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -2564,7 +2674,7 @@ function ConfigView({
         setCredsSaving(true);
         setCredsMessage(null);
         try {
-            const res = await fetch(`/api/mgmt/clients/${selectedClient}/credentials`, {
+            const res = await authFetch(`/api/mgmt/clients/${selectedClient}/credentials`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -4865,9 +4975,9 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                                                         {/* Billing Summary Card */}
                                                                         <div style={{ padding: '16px', backgroundColor: 'rgba(16,185,129,0.04)', borderRadius: '12px', border: '1px solid rgba(16,185,129,0.1)', display: 'flex', flexDirection: 'column' }}>
                                                                             <div style={{ fontSize: '11px', color: '#10b981', fontWeight: 700, textTransform: 'uppercase', marginBottom: '10px' }}>
-                                                                                💰 API Billing Summary
+                                                                                💰 API Billing Summary (Client Billed)
                                                                             </div>
-                                                                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                                                                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px', flex: 1 }}>
                                                                                 {(() => {
                                                                                     const totals: Record<string, number> = {};
                                                                                     jobLogs.forEach(l => {
@@ -4880,16 +4990,68 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                                                                         return <span style={{ color: '#6b7280', fontSize: '11px' }}>No billed events recorded yet.</span>;
                                                                                     }
                                                                                     return Object.entries(totals).map(([name, cost]) => (
-                                                                                        <div key={name} style={{ padding: '4px 8px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '6px', fontSize: '11px' }}>
+                                                                                        <div key={name} style={{ padding: '6px 10px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '6px', fontSize: '11px' }}>
                                                                                             <span style={{ color: '#9ca3af' }}>{name}:</span> <span style={{ fontWeight: 700, color: '#fff' }}>${cost.toFixed(4)}</span>
                                                                                         </div>
                                                                                     ));
                                                                                 })()}
                                                                             </div>
-                                                                            <div style={{ padding: '8px 14px', backgroundColor: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: '8px', fontSize: '13px', marginTop: 'auto', alignSelf: 'flex-start', color: '#10b981', fontWeight: 800 }}>
-                                                                                Total Billed: ${jobLogs.reduce((s, l) => s + (l.billed_cost || 0), 0).toFixed(4)}
+                                                                            <div style={{ padding: '8px 14px', backgroundColor: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: '8px', fontSize: '13px', alignSelf: 'flex-start', color: '#10b981', fontWeight: 800 }}>
+                                                                                Total Billed: ${(item.total_cost_usd != null ? Number(item.total_cost_usd) : jobLogs.reduce((s, l) => s + (l.billed_cost || 0), 0)).toFixed(4)}
                                                                             </div>
                                                                         </div>
+
+                                                                        {/* Provider Cost Summary Card */}
+                                                                        {showProviderCosts && (
+                                                                            <div style={{ padding: '16px', backgroundColor: 'rgba(245,158,11,0.04)', borderRadius: '12px', border: '1px solid rgba(245,158,11,0.1)', display: 'flex', flexDirection: 'column' }}>
+                                                                                <div style={{ fontSize: '11px', color: '#f59e0b', fontWeight: 700, textTransform: 'uppercase', marginBottom: '10px' }}>
+                                                                                    🏦 Provider Cost Summary (Actual API Cost)
+                                                                                </div>
+                                                                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px', flex: 1 }}>
+                                                                                    {(() => {
+                                                                                        const totals: Record<string, number> = {};
+                                                                                        jobLogs.forEach(l => {
+                                                                                            const name = l.endpoint?.includes('transcription') ? 'Transcription' :
+                                                                                                       l.endpoint?.includes('subtitles') ? 'Subtitles' :
+                                                                                                       l.endpoint?.split('/').pop() || 'Other';
+                                                                                            totals[name] = (totals[name] || 0) + (l.cost_usd || 0);
+                                                                                        });
+                                                                                        if (Object.keys(totals).length === 0) {
+                                                                                            return <span style={{ color: '#6b7280', fontSize: '11px' }}>No provider costs recorded yet.</span>;
+                                                                                        }
+                                                                                        return Object.entries(totals).map(([name, cost]) => (
+                                                                                            <div key={name} style={{ padding: '6px 10px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '6px', fontSize: '11px' }}>
+                                                                                                <span style={{ color: '#9ca3af' }}>{name}:</span> <span style={{ fontWeight: 700, color: '#f59e0b' }}>${cost.toFixed(4)}</span>
+                                                                                            </div>
+                                                                                        ));
+                                                                                    })()}
+                                                                                </div>
+                                                                                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                                                                    <div style={{ padding: '8px 14px', backgroundColor: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '8px', fontSize: '13px', color: '#f59e0b', fontWeight: 800 }}>
+                                                                                        Total Cost: ${(item.provider_cost_usd != null ? Number(item.provider_cost_usd) : jobLogs.reduce((s, l) => s + (l.cost_usd || 0), 0)).toFixed(4)}
+                                                                                    </div>
+                                                                                    {(() => {
+                                                                                        const totalBilled = item.total_cost_usd != null ? Number(item.total_cost_usd) : jobLogs.reduce((s, l) => s + (l.billed_cost || 0), 0);
+                                                                                        const totalProvider = item.provider_cost_usd != null ? Number(item.provider_cost_usd) : jobLogs.reduce((s, l) => s + (l.cost_usd || 0), 0);
+                                                                                        const margin = totalBilled > 0 ? ((totalBilled - totalProvider) / totalBilled) * 100 : 0;
+                                                                                        if (totalBilled <= 0) return null;
+                                                                                        return (
+                                                                                            <div style={{ 
+                                                                                                padding: '8px 12px', 
+                                                                                                backgroundColor: margin >= 0 ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', 
+                                                                                                border: `1px solid ${margin >= 0 ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`, 
+                                                                                                borderRadius: '8px', 
+                                                                                                fontSize: '11px', 
+                                                                                                fontWeight: 700,
+                                                                                                color: margin >= 0 ? '#34d399' : '#f87171'
+                                                                                            }}>
+                                                                                                Profit Margin: {margin.toFixed(1)}%
+                                                                                            </div>
+                                                                                        );
+                                                                                    })()}
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
                                                                     </div>
 
                                                                     <table style={{ width: '100%', fontSize: '11px', borderCollapse: 'collapse' }}>
