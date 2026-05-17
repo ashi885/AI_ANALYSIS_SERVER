@@ -73,7 +73,8 @@ function createTables() {
             description TEXT,
             provider_bal_openai REAL DEFAULT 0,
             provider_bal_openrouter REAL DEFAULT 0,
-            provider_warn_threshold REAL DEFAULT 25.0
+            provider_warn_threshold REAL DEFAULT 25.0,
+            allow_rate_card_fetch INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS client_api_keys (
@@ -155,6 +156,7 @@ function createTables() {
             tokens_used INTEGER,
             latency_ms INTEGER,
             error_message TEXT,
+            duration_seconds REAL DEFAULT 0,
             pricing_id INTEGER,
             request_id TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -365,6 +367,7 @@ function createTables() {
             latency_ms INTEGER,
             cost_usd REAL,
             tokens_used INTEGER,
+            duration_seconds REAL DEFAULT 0,
             error_message TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
@@ -396,7 +399,13 @@ function createTables() {
         `ALTER TABLE clients ADD COLUMN provider_bal_openai REAL DEFAULT 0`,
         `ALTER TABLE clients ADD COLUMN provider_bal_openrouter REAL DEFAULT 0`,
         `ALTER TABLE clients ADD COLUMN provider_warn_threshold REAL DEFAULT 25.0`,
-        `ALTER TABLE ai_jobs ADD COLUMN sub_status TEXT`
+        `ALTER TABLE ai_jobs ADD COLUMN sub_status TEXT`,
+        `ALTER TABLE clients ADD COLUMN allow_rate_card_fetch INTEGER DEFAULT 0`,
+        `ALTER TABLE client_usage ADD COLUMN duration_seconds REAL DEFAULT 0`,
+        `ALTER TABLE client_usage_logs ADD COLUMN duration_seconds REAL DEFAULT 0`,
+        `ALTER TABLE ai_jobs ADD COLUMN file_duration REAL DEFAULT 0`,
+        `ALTER TABLE ai_jobs ADD COLUMN queue_status TEXT DEFAULT 'pending'`,
+        `ALTER TABLE ai_jobs ADD COLUMN priority INTEGER DEFAULT 0`
     ];
     for (const sql of migrations) {
         try {

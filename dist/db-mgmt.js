@@ -694,9 +694,9 @@ async function logClientUsage(params) {
             INSERT INTO client_usage (
                 client_id, job_id, user_id, module_name, provider, model,
                 status, cost_usd, actual_cost_usd, tokens_used, latency_ms,
-                error_message, pricing_id, request_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(params.clientId, params.jobId || null, params.userId || null, params.moduleName, params.provider, params.model || null, params.status, params.costUsd, params.actualCostUsd || null, params.tokensUsed || null, params.latencyMs || null, params.errorMessage || null, params.pricingId || null, params.requestId || null);
+                error_message, pricing_id, request_id, duration_seconds
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(params.clientId, params.jobId || null, params.userId || null, params.moduleName, params.provider, params.model || null, params.status, params.costUsd, params.actualCostUsd || null, params.tokensUsed || null, params.latencyMs || null, params.errorMessage || null, params.pricingId || null, params.requestId || null, params.durationSeconds || 0);
         // --- AUTOMATIC CREDIT DEDUCTION (Client Billing) ---
         if (params.status === 'success' && params.costUsd > 0) {
             await deductCredits(params.clientId, params.costUsd, `AI Module: ${params.moduleName}`, (_a = params.jobId) === null || _a === void 0 ? void 0 : _a.toString());

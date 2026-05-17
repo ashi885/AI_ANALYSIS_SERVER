@@ -6,6 +6,7 @@ import { getClientModels } from './middleware/license';
 import { buildPromptParts, PROMPT_TEMPLATES } from './routes/analyze';
 import { sanitizeAIError } from './lib/ai/utils';
 import { OpenRouterClient } from './lib/ai/openrouter';
+import { processAiJob } from './lib/ai/job-processor';
 import crypto from 'crypto';
 
 // Configuration constants (Default model now loaded dynamically from DB)
@@ -19,15 +20,117 @@ let isProcessing = false;
 export async function initQueueWorker() {
     console.log('[AI Queue] Initializing AI Background Worker...');
     
-    // Safety check: Move any stuck jobs (processing during a crash) back to pending
     const db = getDatabase();
-    const act = db.prepare(`UPDATE ai_job_queue SET status = 'pending' WHERE status = 'processing'`).run();
-    if (act.changes > 0) {
-        console.log(`[AI Queue] Recovered ${act.changes} jobs stuck in processing state.`);
+    const isDev = process.env.NODE_ENV === 'development' || process.env.TS_NODE_DEV === 'true' || !process.env.NODE_ENV;
+    
+    if (isDev) {
+        // Move stuck jobs to failed to protect balance from Nodemon/development restart loops
+        const act = db.prepare(`
+            UPDATE ai_job_queue 
+            SET status = 'failed', error = 'Server restarted in development mode. Stopped execution to protect balance.' 
+            WHERE status = 'processing'
+        `).run();
+        if (act.changes > 0) {
+            console.log(`[AI Queue] [DEV-PROTECT] Marked ${act.changes} stuck sub-jobs as failed to prevent Nodemon infinite loops.`);
+        }
+        
+        const actMain = db.prepare(`
+            UPDATE ai_jobs 
+            SET queue_status = 'failed', status = 'error', error_message = 'Server restarted in development mode. Stopped execution to protect balance.' 
+            WHERE queue_status = 'processing'
+        `).run();
+        if (actMain.changes > 0) {
+            console.log(`[AI Pipeline] [DEV-PROTECT] Marked ${actMain.changes} stuck main jobs as failed to prevent Nodemon infinite loops.`);
+        }
+    } else {
+        // Safety check: Move any stuck jobs (processing during a crash) back to pending
+        const act = db.prepare(`UPDATE ai_job_queue SET status = 'pending' WHERE status = 'processing'`).run();
+        if (act.changes > 0) {
+            console.log(`[AI Queue] Recovered ${act.changes} sub-jobs stuck in processing state.`);
+        }
+
+        const actMain = db.prepare(`UPDATE ai_jobs SET queue_status = 'pending' WHERE queue_status = 'processing'`).run();
+        if (actMain.changes > 0) {
+            console.log(`[AI Pipeline] Recovered ${actMain.changes} main jobs stuck in processing state.`);
+        }
     }
 
     // Start background loop (polls every 3 seconds)
     workerInterval = setInterval(processQueue, 3000);
+    setInterval(processMainPipeline, 5000);
+}
+
+// MAIN PIPELINE LOGIC (Fair-Share Concurrency)
+const MAX_GLOBAL_CONCURRENT = 5;
+const MAX_PER_CLIENT_CONCURRENT = 2;
+export const activeJobControllers = new Map<string, AbortController>();
+let isPipelineProcessing = false;
+
+export function abortJob(jobId: string): boolean {
+    const controller = activeJobControllers.get(jobId);
+    if (controller) {
+        controller.abort();
+        activeJobControllers.delete(jobId);
+        return true;
+    }
+    return false;
+}
+
+async function processMainPipeline() {
+    if (isPipelineProcessing) return;
+    isPipelineProcessing = true;
+    try {
+        const db = getDatabase();
+        // 1. Check current running jobs
+        const activeJobs = db.prepare(`SELECT client_id FROM ai_jobs WHERE queue_status = 'processing'`).all() as any[];
+        if (activeJobs.length >= MAX_GLOBAL_CONCURRENT) return; // Full
+
+        const activePerClient = activeJobs.reduce((acc, job) => {
+            acc[job.client_id] = (acc[job.client_id] || 0) + 1;
+            return acc;
+        }, {} as Record<number, number>);
+
+        // 2. Get pending jobs, ordered by priority DESC, then oldest first
+        const pendingJobs = db.prepare(`SELECT * FROM ai_jobs WHERE queue_status = 'pending' ORDER BY priority DESC, created_at ASC`).all() as any[];
+
+        for (const job of pendingJobs) {
+            if (activeJobs.length >= MAX_GLOBAL_CONCURRENT) break;
+            if ((activePerClient[job.client_id] || 0) >= MAX_PER_CLIENT_CONCURRENT) continue;
+
+            // Start this job
+            db.prepare(`UPDATE ai_jobs SET queue_status = 'processing', sub_status = 'Initializing pipeline', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
+            activeJobs.push(job);
+            activePerClient[job.client_id] = (activePerClient[job.client_id] || 0) + 1;
+
+            const abortController = new AbortController();
+            activeJobControllers.set(job.id, abortController);
+
+            const clientInfo = db.prepare(`SELECT name FROM clients WHERE id = ?`).get(job.client_id) as any;
+            const clientName = clientInfo?.name || 'Unknown';
+            const modulesRequested = JSON.parse(job.modules_requested);
+            const targetLanguages = job.target_languages ? JSON.parse(job.target_languages) : undefined;
+
+            console.log(`[AI Pipeline] Launching Job ${job.id} for client ${clientName}`);
+
+            // Fire and forget the main pipeline
+            processAiJob(job.id, job.audio_path, modulesRequested, job.client_id, clientName, job.file_duration, targetLanguages, abortController.signal).then(() => {
+                db.prepare(`UPDATE ai_jobs SET queue_status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND queue_status != 'failed'`).run(job.id);
+            }).catch(err => {
+                if (err.name === 'AbortError' || err.message === 'AbortError') {
+                    db.prepare(`UPDATE ai_jobs SET queue_status = 'failed', status = 'error', error_message = 'Job was manually aborted by support staff', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
+                } else {
+                    db.prepare(`UPDATE ai_jobs SET queue_status = 'failed', status = 'error', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(err.message, job.id);
+                }
+            }).finally(() => {
+                activeJobControllers.delete(job.id);
+                setImmediate(processMainPipeline); // Trigger next immediately
+            });
+        }
+    } catch (err: any) {
+        console.error('[AI Pipeline] Error in worker loop:', err.message);
+    } finally {
+        isPipelineProcessing = false;
+    }
 }
 
 // Enqueue a new async job
@@ -203,15 +306,33 @@ async function runAILogic(clientId: number, moduleName: string, payload: any, qu
                 target_language: lang
             });
 
-            const result = await aiClient.completeWithRetry({
-                messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-                model: targetModel, temperature: DEFAULT_TEMPERATURE, maxTokens: DEFAULT_MAX_TOKENS
-            });
+            const suffixedModuleName = `subtitle_translation-${lang.toLowerCase()}`;
+            let result;
+            try {
+                result = await aiClient.completeWithRetry({
+                    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+                    model: targetModel, temperature: DEFAULT_TEMPERATURE, maxTokens: DEFAULT_MAX_TOKENS
+                });
+            } catch (err: any) {
+                const latency = Date.now() - startTime;
+                let statusCode = 500;
+                const statusMatch = err.message?.match(/\b(400|401|403|429|500|503)\b/);
+                if (statusMatch) {
+                    statusCode = parseInt(statusMatch[1]);
+                }
+
+                await logApiRequest({
+                    clientId, provider: 'openrouter', endpoint: `/api/ai/job/${suffixedModuleName}`,
+                    model: targetModel, direction: 'outgoing', responseStatus: statusCode, latencyMs: latency,
+                    requestId: 'err_' + Date.now(), parentJobId: payload.jobId, billedCost: 0,
+                    costUsd: 0, tokensUsed: 0, errorMessage: err.message,
+                    requestBody: { system, user }, responseBody: { error: err.message }
+                });
+                throw err;
+            }
 
             const usage = (result.usage as any) || { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
             const requestId = result.id || `req_${Date.now()}`;
-
-            const suffixedModuleName = `subtitle_translation-${lang.toLowerCase()}`;
 
             // Log usage for each language
             await logClientUsage({
@@ -263,18 +384,55 @@ async function runAILogic(clientId: number, moduleName: string, payload: any, qu
     db.prepare(`UPDATE ai_job_queue SET sub_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
       .run('Processing analysis...', queueJobId);
 
-    const result = await aiClient.completeWithRetry({
-        messages: [
-            { role: 'system', content: systemContent },
-            { role: 'user', content: userContent }
-        ],
-        model: targetModel,
-        temperature: DEFAULT_TEMPERATURE,
-        maxTokens: DEFAULT_MAX_TOKENS
-    });
+    let result;
+    try {
+        result = await aiClient.completeWithRetry({
+            messages: [
+                { role: 'system', content: systemContent },
+                { role: 'user', content: userContent }
+            ],
+            model: targetModel,
+            temperature: DEFAULT_TEMPERATURE,
+            maxTokens: DEFAULT_MAX_TOKENS
+        });
+    } catch (err: any) {
+        const latency = Date.now() - startTime;
+        let statusCode = 500;
+        const statusMatch = err.message?.match(/\b(400|401|403|429|500|503)\b/);
+        if (statusMatch) {
+            statusCode = parseInt(statusMatch[1]);
+        }
+
+        await logApiRequest({
+            clientId, provider: 'openrouter', endpoint: `/api/ai/job/${moduleName}`,
+            model: targetModel, direction: 'outgoing', responseStatus: statusCode, latencyMs: latency,
+            requestId: 'err_' + Date.now(), parentJobId: payload.jobId, billedCost: 0,
+            costUsd: 0, tokensUsed: 0, errorMessage: err.message,
+            requestBody: { system: systemContent, user: userContent }, responseBody: { error: err.message }
+        });
+        throw err;
+    }
 
     const usage = (result.usage as any) || { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const requestId = result.id || `req_${Date.now()}`;
+
+    // Log outgoing request (Audit trail)
+    await logApiRequest({
+        clientId: clientId,
+        provider: 'openrouter',
+        endpoint: `/api/ai/job/${moduleName}`,
+        model: targetModel,
+        direction: 'outgoing',
+        responseStatus: 200,
+        latencyMs: Date.now() - startTime,
+        requestId: requestId,
+        parentJobId: payload.jobId,
+        billedCost: moduleCost,
+        costUsd: result.cost || 0,
+        tokensUsed: usage.totalTokens || (usage.promptTokens + usage.completionTokens) || 0,
+        requestBody: { system: systemContent, user: userContent },
+        responseBody: { content: result.content?.substring(0, 50000) }
+    });
 
     // --- LOG BILLING USAGE ---
     await logClientUsage({

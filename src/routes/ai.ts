@@ -264,6 +264,25 @@ aiRouter.post('/openrouter', licenseMiddleware, async (req: LicensedRequest, res
         });
     } catch (error: any) {
         logger.error('AI', 'OPENROUTER_ERROR', `OpenRouter failed: ${error.message}`, error.stack, { clientId, clientName });
+        
+        let statusCode = 500;
+        const statusMatch = error.message?.match(/\b(400|401|403|429|500|503)\b/);
+        if (statusMatch) {
+            statusCode = parseInt(statusMatch[1]);
+        }
+
+        logApiRequest({
+            clientId: clientId!,
+            provider: 'openrouter',
+            endpoint: '/api/ai/openrouter',
+            direction: 'outgoing',
+            errorMessage: error.message,
+            responseStatus: statusCode,
+            latencyMs: Date.now() - startTime,
+            ipAddress: req.ip,
+            userAgent: req.get('User-Agent')
+        });
+
         return res.status(500).json({ error: error.message });
     }
 });
@@ -321,18 +340,23 @@ aiRouter.post('/job', licenseMiddleware, upload.single('audio'), async (req: Lic
         const duration = req.body.duration ? parseFloat(String(req.body.duration)) : 0;
 
         db.prepare(`
-            INSERT INTO ai_jobs (id, client_id, user_id, local_job_id, status, modules_requested, target_languages, audio_path, file_duration)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO ai_jobs (id, client_id, user_id, local_job_id, status, modules_requested, target_languages, audio_path, file_duration, queue_status, priority)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)
         `).run(jobId, clientId, userId, localJobId, 'processing', JSON.stringify(modulesRequested), targetLanguages ? JSON.stringify(targetLanguages) : null, file.path, duration);
 
-        logger.info('AI', 'JOB_SUBMITTED', `Parallel AI job ${jobId} submitted`, { clientId, userId, localJobId, modulesRequested, targetLanguages, duration });
+        logger.info('AI', 'JOB_SUBMITTED', `Parallel AI job ${jobId} added to queue`, { clientId, userId, localJobId, modulesRequested, targetLanguages, duration });
         
-        // Fire and forget
-        processAiJob(jobId, file.path, modulesRequested, clientId!, clientName || 'Unknown', duration, targetLanguages || undefined).catch(err => {
-            logger.error('AI', 'JOB_PROCESSOR_CRASH', `Job processor crashed: ${err.message}`, err.stack, { jobId });
-        });
+        // Calculate ETA for the client
+        const pendingCount = db.prepare(`SELECT COUNT(*) as count FROM ai_jobs WHERE queue_status = 'pending'`).get() as { count: number };
+        // Estimate: ~4 minutes per job in queue as a generic baseline
+        const etaMinutes = pendingCount.count * 4;
 
-        return res.json({ jobId });
+        return res.json({ 
+            jobId,
+            status: 'pending',
+            queue_position: pendingCount.count,
+            eta_minutes: etaMinutes
+        });
 
     } catch (error: any) {
         logger.error('AI', 'JOB_SUBMIT_ERROR', `Failed to submit job: ${error.message}`, error.stack, { clientId });
@@ -347,15 +371,34 @@ aiRouter.get('/job/:id', licenseMiddleware, async (req: LicensedRequest, res: Re
 
     try {
         const db = getDatabase();
-        const job = db.prepare('SELECT * FROM ai_jobs WHERE id = ? AND client_id = ?').get(jobId, clientId) as any;
+        let job = db.prepare('SELECT * FROM ai_jobs WHERE id = ? AND client_id = ?').get(jobId, clientId) as any;
+        if (!job) {
+            job = db.prepare('SELECT * FROM ai_jobs WHERE local_job_id = ? AND client_id = ?').get(jobId, clientId) as any;
+        }
 
         if (!job) {
             return res.status(404).json({ error: 'Job not found' });
         }
 
+        let queuePosition = null;
+        let etaMinutes = null;
+        if (job.queue_status === 'pending') {
+            const posRow = db.prepare(`
+                SELECT COUNT(*) as count 
+                FROM ai_jobs 
+                WHERE queue_status = 'pending' AND created_at <= ?
+            `).get(job.created_at) as { count: number };
+            queuePosition = posRow.count;
+            etaMinutes = queuePosition * 4;
+        }
+
         return res.json({
             id: job.id,
-            status: job.status,
+            status: job.queue_status === 'pending' ? 'pending' : job.status,
+            queue_status: job.queue_status,
+            sub_status: job.sub_status,
+            queue_position: queuePosition,
+            eta_minutes: etaMinutes,
             modules_requested: JSON.parse(job.modules_requested),
             result_data: job.result_data ? JSON.parse(job.result_data) : null,
             total_cost_usd: job.total_cost_usd,

@@ -11,7 +11,6 @@ const openrouter_1 = require("../lib/ai/openrouter");
 const license_1 = require("../middleware/license");
 const db_mgmt_1 = require("../db-mgmt");
 const logger_1 = require("../logger");
-const job_processor_1 = require("../lib/ai/job-processor");
 const crypto_1 = __importDefault(require("crypto"));
 const upload = (0, multer_1.default)({
     dest: 'uploads/',
@@ -138,7 +137,7 @@ exports.aiRouter.post('/whisper', license_1.licenseMiddleware, upload.single('au
 });
 // Proxy OpenRouter
 exports.aiRouter.post('/openrouter', license_1.licenseMiddleware, async (req, res) => {
-    var _a, _b;
+    var _a, _b, _c;
     const startTime = Date.now();
     const clientId = (_a = req.client) === null || _a === void 0 ? void 0 : _a.id;
     const clientName = (_b = req.client) === null || _b === void 0 ? void 0 : _b.name;
@@ -230,6 +229,22 @@ exports.aiRouter.post('/openrouter', license_1.licenseMiddleware, async (req, re
     }
     catch (error) {
         logger_1.logger.error('AI', 'OPENROUTER_ERROR', `OpenRouter failed: ${error.message}`, error.stack, { clientId, clientName });
+        let statusCode = 500;
+        const statusMatch = (_c = error.message) === null || _c === void 0 ? void 0 : _c.match(/\b(400|401|403|429|500|503)\b/);
+        if (statusMatch) {
+            statusCode = parseInt(statusMatch[1]);
+        }
+        (0, db_mgmt_1.logApiRequest)({
+            clientId: clientId,
+            provider: 'openrouter',
+            endpoint: '/api/ai/openrouter',
+            direction: 'outgoing',
+            errorMessage: error.message,
+            responseStatus: statusCode,
+            latencyMs: Date.now() - startTime,
+            ipAddress: req.ip,
+            userAgent: req.get('User-Agent')
+        });
         return res.status(500).json({ error: error.message });
     }
 });
@@ -277,17 +292,22 @@ exports.aiRouter.post('/job', license_1.licenseMiddleware, upload.single('audio'
                 logger_1.logger.warn('AI', 'JOB_SUBMIT_LANG_PARSE_ERROR', 'Failed to parse target_languages', { jobId, targetLanguagesRaw });
             }
         }
+        const duration = req.body.duration ? parseFloat(String(req.body.duration)) : 0;
         db.prepare(`
-            INSERT INTO ai_jobs (id, client_id, user_id, local_job_id, status, modules_requested, target_languages, audio_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(jobId, clientId, userId, localJobId, 'processing', JSON.stringify(modulesRequested), targetLanguages ? JSON.stringify(targetLanguages) : null, file.path);
-        logger_1.logger.info('AI', 'JOB_SUBMITTED', `Parallel AI job ${jobId} submitted`, { clientId, userId, localJobId, modulesRequested, targetLanguages });
-        const duration = req.body.duration ? parseFloat(String(req.body.duration)) : null;
-        // Fire and forget
-        (0, job_processor_1.processAiJob)(jobId, file.path, modulesRequested, clientId, clientName || 'Unknown', duration, targetLanguages || undefined).catch(err => {
-            logger_1.logger.error('AI', 'JOB_PROCESSOR_CRASH', `Job processor crashed: ${err.message}`, err.stack, { jobId });
+            INSERT INTO ai_jobs (id, client_id, user_id, local_job_id, status, modules_requested, target_languages, audio_path, file_duration, queue_status, priority)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)
+        `).run(jobId, clientId, userId, localJobId, 'processing', JSON.stringify(modulesRequested), targetLanguages ? JSON.stringify(targetLanguages) : null, file.path, duration);
+        logger_1.logger.info('AI', 'JOB_SUBMITTED', `Parallel AI job ${jobId} added to queue`, { clientId, userId, localJobId, modulesRequested, targetLanguages, duration });
+        // Calculate ETA for the client
+        const pendingCount = db.prepare(`SELECT COUNT(*) as count FROM ai_jobs WHERE queue_status = 'pending'`).get();
+        // Estimate: ~4 minutes per job in queue as a generic baseline
+        const etaMinutes = pendingCount.count * 4;
+        return res.json({
+            jobId,
+            status: 'pending',
+            queue_position: pendingCount.count,
+            eta_minutes: etaMinutes
         });
-        return res.json({ jobId });
     }
     catch (error) {
         logger_1.logger.error('AI', 'JOB_SUBMIT_ERROR', `Failed to submit job: ${error.message}`, error.stack, { clientId });
@@ -301,16 +321,21 @@ exports.aiRouter.get('/job/:id', license_1.licenseMiddleware, async (req, res) =
     const jobId = req.params.id;
     try {
         const db = (0, db_mgmt_1.getDatabase)();
-        const job = db.prepare('SELECT * FROM ai_jobs WHERE id = ? AND client_id = ?').get(jobId, clientId);
+        let job = db.prepare('SELECT * FROM ai_jobs WHERE id = ? AND client_id = ?').get(jobId, clientId);
+        if (!job) {
+            job = db.prepare('SELECT * FROM ai_jobs WHERE local_job_id = ? AND client_id = ?').get(jobId, clientId);
+        }
         if (!job) {
             return res.status(404).json({ error: 'Job not found' });
         }
         return res.json({
             id: job.id,
-            status: job.status,
+            status: job.queue_status === 'pending' ? 'pending' : job.status,
+            queue_status: job.queue_status,
             modules_requested: JSON.parse(job.modules_requested),
             result_data: job.result_data ? JSON.parse(job.result_data) : null,
             total_cost_usd: job.total_cost_usd,
+            file_duration: job.file_duration,
             error_message: job.error_message,
             created_at: job.created_at,
             updated_at: job.updated_at

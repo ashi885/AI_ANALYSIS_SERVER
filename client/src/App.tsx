@@ -164,6 +164,7 @@ const styles: Record<string, React.CSSProperties> = {
 
 const NAV_ITEMS = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+    { id: 'reports', label: 'Reports & Analytics', icon: '📈' },
     { id: 'clients', label: 'Clients', icon: '👥' },
     { id: 'configuration', label: 'Configuration', icon: '⚙️' },
     { id: 'billing', label: 'Billing', icon: '💰' },
@@ -506,7 +507,7 @@ function App() {
     }, [authFetch]);
 
     useEffect(() => {
-        if (activeTab === 'api-logs') fetchApiLogs();
+        if (activeTab === 'api-logs' || activeTab === 'reports') fetchApiLogs();
     }, [activeTab, fetchApiLogs]);
 
     if (authLoading) return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#0a0a0f', color: 'white' }}>Loading...</div>;
@@ -587,6 +588,7 @@ function App() {
                             onSaveCredentials={handleSaveCredentials}
                             globalDefaultModel={globalDefaultModel}
                             onSaveGlobalDefaultModel={handleSaveGlobalDefaultModel}
+                            authFetch={authFetch}
                         />
                     )}
                     {activeTab === 'settings' && (
@@ -611,6 +613,7 @@ function App() {
                         />
                     )}
                     {activeTab === 'ai-jobs' && <AiJobsView authFetch={authFetch} clients={clients} />}
+                    {activeTab === 'reports' && <ReportsView logs={apiLogs} loading={apiLogsLoading} clients={clients} onRefresh={fetchApiLogs} />}
                     {activeTab === 'license-cache' && <LicenseCacheView authFetch={authFetch} />}
                     {activeTab === 'smtp' && <SmtpSettingsView authFetch={authFetch} />}
                     {activeTab === 'sync-queue' && <SyncQueueView authFetch={authFetch} />}
@@ -621,8 +624,346 @@ function App() {
     );
 }
 
+function ReportsView({ logs, loading, clients, onRefresh }: { logs: any[], loading: boolean, clients: any[], onRefresh: () => void }) {
+    const formatDateForInput = (d: Date) => {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    };
+
+    const [startDate, setStartDate] = useState(() => {
+        const d = new Date();
+        d.setDate(d.getDate() - 30);
+        return formatDateForInput(d);
+    });
+    const [endDate, setEndDate] = useState(() => formatDateForInput(new Date()));
+    const [clientFilter, setClientFilter] = useState('all');
+    const [selectedTab, setSelectedTab] = useState<'financial' | 'client' | 'technical'>('financial');
+
+    // Filter logs based on dates and clients in real-time
+    const filteredLogs = React.useMemo(() => {
+        return logs.filter(log => {
+            const logDate = new Date(log.created_at);
+            const start = startDate ? new Date(startDate + 'T00:00:00') : null;
+            const end = endDate ? new Date(endDate + 'T23:59:59') : null;
+            
+            if (start && logDate < start) return false;
+            if (end && logDate > end) return false;
+            
+            if (clientFilter !== 'all') {
+                const client = clients.find(c => String(c.id) === clientFilter || c.name === clientFilter);
+                if (client) {
+                    if (log.client_id !== client.id && log.client_name !== client.name) return false;
+                } else {
+                    if (log.client_name !== clientFilter) return false;
+                }
+            }
+            return true;
+        });
+    }, [logs, startDate, endDate, clientFilter, clients]);
+
+    // Compute metrics
+    const totalRequests = filteredLogs.length;
+    const successCount = filteredLogs.filter(l => (l.response_status || 0) < 400).length;
+    const errorCount = filteredLogs.filter(l => (l.response_status || 0) >= 400).length;
+    const successRate = totalRequests > 0 ? (successCount / totalRequests) * 100 : 100;
+    const errorRate = totalRequests > 0 ? (errorCount / totalRequests) * 100 : 0;
+
+    const totalRevenue = filteredLogs.reduce((sum, l) => sum + (l.billed_cost || 0), 0);
+    const totalExpense = filteredLogs.reduce((sum, l) => sum + (l.cost_usd || 0), 0);
+    const netProfit = totalRevenue - totalExpense;
+    const profitMargin = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
+    const avgLatency = totalRequests > 0 ? (filteredLogs.reduce((sum, l) => sum + (l.latency_ms || 0), 0) / totalRequests) / 1000 : 0;
+
+    // Grouping Breakdowns
+    const clientBreakdown = React.useMemo(() => {
+        const map: Record<string, { name: string; count: number; revenue: number; expense: number; success: number; latencySum: number }> = {};
+        filteredLogs.forEach(l => {
+            const key = l.client_name || `Client ${l.client_id || 'Unknown'}`;
+            if (!map[key]) {
+                map[key] = { name: key, count: 0, revenue: 0, expense: 0, success: 0, latencySum: 0 };
+            }
+            map[key].count++;
+            map[key].revenue += (l.billed_cost || 0);
+            map[key].expense += (l.cost_usd || 0);
+            if ((l.response_status || 0) < 400) map[key].success++;
+            map[key].latencySum += (l.latency_ms || 0);
+        });
+        return Object.values(map).sort((a, b) => b.revenue - a.revenue);
+    }, [filteredLogs]);
+
+    const technicalBreakdown = React.useMemo(() => {
+        const map: Record<string, { model: string; count: number; cost: number; expense: number; success: number; latencySum: number }> = {};
+        filteredLogs.forEach(l => {
+            const key = l.model || l.endpoint || 'Unknown Model';
+            if (!map[key]) {
+                map[key] = { model: key, count: 0, cost: 0, expense: 0, success: 0, latencySum: 0 };
+            }
+            map[key].count++;
+            map[key].cost += (l.billed_cost || 0);
+            map[key].expense += (l.cost_usd || 0);
+            if ((l.response_status || 0) < 400) map[key].success++;
+            map[key].latencySum += (l.latency_ms || 0);
+        });
+        return Object.values(map).sort((a, b) => b.count - a.count);
+    }, [filteredLogs]);
+
+    const dateBreakdown = React.useMemo(() => {
+        const map: Record<string, { date: string; count: number; revenue: number; expense: number; errors: number }> = {};
+        filteredLogs.forEach(l => {
+            const dateStr = new Date(l.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            if (!map[dateStr]) {
+                map[dateStr] = { date: dateStr, count: 0, revenue: 0, expense: 0, errors: 0 };
+            }
+            map[dateStr].count++;
+            map[dateStr].revenue += (l.billed_cost || 0);
+            map[dateStr].expense += (l.cost_usd || 0);
+            if ((l.response_status || 0) >= 400) map[dateStr].errors++;
+        });
+        return Object.values(map).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    }, [filteredLogs]);
+
+    return (
+        <div>
+            {/* Range and Client Filter Bar */}
+            <div style={{ ...styles.card, padding: '20px', marginBottom: '24px', display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 800, letterSpacing: '0.05em' }}>START DATE:</label>
+                    <input 
+                        type="date" 
+                        value={startDate} 
+                        onChange={(e) => setStartDate(e.target.value)} 
+                        style={{ ...styles.input, width: '160px', padding: '8px 12px', fontSize: '13px' }} 
+                    />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 800, letterSpacing: '0.05em' }}>END DATE:</label>
+                    <input 
+                        type="date" 
+                        value={endDate} 
+                        onChange={(e) => setEndDate(e.target.value)} 
+                        style={{ ...styles.input, width: '160px', padding: '8px 12px', fontSize: '13px' }} 
+                    />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: 1, minWidth: '200px' }}>
+                    <label style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 800, letterSpacing: '0.05em' }}>FILTER BY CLIENT:</label>
+                    <select 
+                        value={clientFilter} 
+                        onChange={(e) => setClientFilter(e.target.value)}
+                        style={{ ...styles.input, padding: '8px 12px', fontSize: '13px', backgroundColor: 'rgba(255,255,255,0.02)' }}
+                    >
+                        <option value="all" style={{ backgroundColor: '#111118', color: '#fff' }}>All Clients</option>
+                        {clients.map(c => (
+                            <option key={c.id} value={c.id} style={{ backgroundColor: '#111118', color: '#fff' }}>{c.name}</option>
+                        ))}
+                    </select>
+                </div>
+                <button 
+                    onClick={onRefresh} 
+                    disabled={loading}
+                    style={{ ...styles.buttonSecondary, alignSelf: 'flex-end', height: '38px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                >
+                    🔄 {loading ? 'Syncing...' : 'REFRESH'}
+                </button>
+            </div>
+
+            {/* Glowing Analytics Badges */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                <div style={{ ...styles.statCard, border: '1px solid rgba(59,130,246,0.1)' }}>
+                    <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Total Requests</div>
+                    <div style={{ fontSize: '28px', fontWeight: 800, color: '#fff' }}>{totalRequests.toLocaleString()}</div>
+                    <div style={{ fontSize: '10px', color: '#6b7280', marginTop: '4px' }}>API Transactions</div>
+                </div>
+                <div style={{ ...styles.statCard, border: '1px solid rgba(139,92,246,0.1)' }}>
+                    <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Billed Revenue</div>
+                    <div style={{ fontSize: '28px', fontWeight: 800, color: '#a78bfa' }}>${totalRevenue.toFixed(2)}</div>
+                    <div style={{ fontSize: '10px', color: '#6b7280', marginTop: '4px' }}>Charged to Clients</div>
+                </div>
+                <div style={{ ...styles.statCard, border: '1px solid rgba(245,158,11,0.1)' }}>
+                    <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Provider Expense</div>
+                    <div style={{ fontSize: '28px', fontWeight: 800, color: '#f59e0b' }}>${totalExpense.toFixed(3)}</div>
+                    <div style={{ fontSize: '10px', color: '#6b7280', marginTop: '4px' }}>OpenRouter/OpenAI Cost</div>
+                </div>
+                <div style={{ ...styles.statCard, border: '1px solid rgba(16,185,129,0.2)', backgroundColor: 'rgba(16,185,129,0.02)' }}>
+                    <div style={{ fontSize: '11px', color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Net Server Profit</div>
+                    <div style={{ fontSize: '28px', fontWeight: 800, color: '#10b981' }}>${netProfit.toFixed(3)}</div>
+                    <div style={{ fontSize: '10px', color: '#10b981', fontWeight: 600, marginTop: '4px' }}>{profitMargin.toFixed(1)}% Margin</div>
+                </div>
+                <div style={{ ...styles.statCard, border: '1px solid rgba(59,130,246,0.1)' }}>
+                    <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Average Latency</div>
+                    <div style={{ fontSize: '28px', fontWeight: 800, color: '#3b82f6' }}>{avgLatency.toFixed(2)}s</div>
+                    <div style={{ fontSize: '10px', color: '#6b7280', marginTop: '4px' }}>AI Service Speed</div>
+                </div>
+            </div>
+
+            {/* Sub-view Selector Tabs */}
+            <div style={{ display: 'flex', gap: '8px', padding: '4px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', width: 'fit-content', marginBottom: '24px' }}>
+                {[
+                    { id: 'financial', label: '📈 Financial Performance & Timeline' },
+                    { id: 'client', label: '👥 Client Ingest Volumes' },
+                    { id: 'technical', label: '🔌 AI Service & Model Health' }
+                ].map(tab => (
+                    <button
+                        key={tab.id}
+                        onClick={() => setSelectedTab(tab.id as any)}
+                        style={{
+                            border: 'none',
+                            borderRadius: '8px',
+                            padding: '8px 16px',
+                            backgroundColor: selectedTab === tab.id ? 'rgba(16,185,129,0.15)' : 'transparent',
+                            color: selectedTab === tab.id ? '#10b981' : '#9ca3af',
+                            fontWeight: selectedTab === tab.id ? 600 : 500,
+                            cursor: 'pointer',
+                            transition: 'all 0.2s'
+                        }}
+                    >
+                        {tab.label}
+                    </button>
+                ))}
+            </div>
+
+            {/* TAB 1: Financial Performance Timeline */}
+            {selectedTab === 'financial' && (
+                <div style={styles.card}>
+                    <h3 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '16px', color: '#fff' }}>📅 Date-Wise Activity & Revenue Timeline</h3>
+                    <div style={{ overflowX: 'auto' }}>
+                        {dateBreakdown.length === 0 ? (
+                            <div style={{ padding: '40px', textAlign: 'center', color: '#6b7280' }}>No transactional data found in this range.</div>
+                        ) : (
+                            <table style={styles.table}>
+                                <thead>
+                                    <tr>
+                                        <th style={styles.th}>Date</th>
+                                        <th style={styles.th}>Total Transactions</th>
+                                        <th style={styles.th}>Billed Revenue</th>
+                                        <th style={styles.th}>Provider Expense</th>
+                                        <th style={styles.th}>Server Profit</th>
+                                        <th style={styles.th}>Technical Errors</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {dateBreakdown.map((row, idx) => {
+                                        const profit = row.revenue - row.expense;
+                                        return (
+                                            <tr key={idx}>
+                                                <td style={{ ...styles.td, fontWeight: 600, color: '#fff' }}>{row.date}</td>
+                                                <td style={styles.td}>{row.count} requests</td>
+                                                <td style={{ ...styles.td, color: '#a78bfa', fontWeight: 600 }}>${row.revenue.toFixed(2)}</td>
+                                                <td style={{ ...styles.td, color: '#f59e0b', fontWeight: 500 }}>${row.expense.toFixed(3)}</td>
+                                                <td style={{ ...styles.td, color: '#10b981', fontWeight: 600 }}>${profit.toFixed(3)}</td>
+                                                <td style={{ ...styles.td, color: row.errors > 0 ? '#ef4444' : '#10b981', fontWeight: 600 }}>
+                                                    {row.errors > 0 ? `⚠️ ${row.errors} failed` : '✅ 0 errors'}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* TAB 2: Client Ingest Volumes */}
+            {selectedTab === 'client' && (
+                <div style={styles.card}>
+                    <h3 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '16px', color: '#fff' }}>👥 Client-Wise Consumption & Profit Report</h3>
+                    <div style={{ overflowX: 'auto' }}>
+                        {clientBreakdown.length === 0 ? (
+                            <div style={{ padding: '40px', textAlign: 'center', color: '#6b7280' }}>No client transactions found.</div>
+                        ) : (
+                            <table style={styles.table}>
+                                <thead>
+                                    <tr>
+                                        <th style={styles.th}>Client Name</th>
+                                        <th style={styles.th}>Requests Sent</th>
+                                        <th style={styles.th}>Total Billed</th>
+                                        <th style={styles.th}>Provider Expense</th>
+                                        <th style={styles.th}>Net Margin</th>
+                                        <th style={styles.th}>Technical Success Rate</th>
+                                        <th style={styles.th}>Avg AI Latency</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {clientBreakdown.map((row, idx) => {
+                                        const profit = row.revenue - row.expense;
+                                        const rate = row.count > 0 ? (row.success / row.count) * 100 : 100;
+                                        const avgLat = row.count > 0 ? (row.latencySum / row.count) / 1000 : 0;
+                                        return (
+                                            <tr key={idx}>
+                                                <td style={{ ...styles.td, fontWeight: 600, color: '#fff' }}>{row.name}</td>
+                                                <td style={styles.td}>{row.count} requests</td>
+                                                <td style={{ ...styles.td, color: '#a78bfa', fontWeight: 600 }}>${row.revenue.toFixed(2)}</td>
+                                                <td style={{ ...styles.td, color: '#f59e0b', fontWeight: 500 }}>${row.expense.toFixed(3)}</td>
+                                                <td style={{ ...styles.td, color: '#10b981', fontWeight: 600 }}>${profit.toFixed(3)}</td>
+                                                <td style={{ ...styles.td, color: rate > 95 ? '#10b981' : (rate > 80 ? '#f59e0b' : '#ef4444'), fontWeight: 600 }}>
+                                                    {rate.toFixed(1)}%
+                                                </td>
+                                                <td style={styles.td}>{avgLat.toFixed(2)}s</td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* TAB 3: AI Service & Model Health */}
+            {selectedTab === 'technical' && (
+                <div style={styles.card}>
+                    <h3 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '16px', color: '#fff' }}>🔌 AI Model Provider Health & Latency Audits</h3>
+                    <div style={{ overflowX: 'auto' }}>
+                        {technicalBreakdown.length === 0 ? (
+                            <div style={{ padding: '40px', textAlign: 'center', color: '#6b7280' }}>No AI model logs recorded.</div>
+                        ) : (
+                            <table style={styles.table}>
+                                <thead>
+                                    <tr>
+                                        <th style={styles.th}>AI Model / Endpoint</th>
+                                        <th style={styles.th}>Invocations</th>
+                                        <th style={styles.th}>Billed Revenue</th>
+                                        <th style={styles.th}>Actual Expense</th>
+                                        <th style={styles.th}>Provider Margin</th>
+                                        <th style={styles.th}>Success Rate</th>
+                                        <th style={styles.th}>Avg Response Time</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {technicalBreakdown.map((row, idx) => {
+                                        const profit = row.cost - row.expense;
+                                        const rate = row.count > 0 ? (row.success / row.count) * 100 : 100;
+                                        const avgLat = row.count > 0 ? (row.latencySum / row.count) / 1000 : 0;
+                                        return (
+                                            <tr key={idx}>
+                                                <td style={{ ...styles.td, fontWeight: 600, color: '#fff', fontFamily: 'monospace', fontSize: '12px' }}>
+                                                    {row.model?.split('/').pop()}
+                                                </td>
+                                                <td style={styles.td}>{row.count} times</td>
+                                                <td style={{ ...styles.td, color: '#a78bfa', fontWeight: 600 }}>${row.cost.toFixed(2)}</td>
+                                                <td style={{ ...styles.td, color: '#f59e0b', fontWeight: 500 }}>${row.expense.toFixed(3)}</td>
+                                                <td style={{ ...styles.td, color: '#10b981', fontWeight: 600 }}>${profit.toFixed(3)}</td>
+                                                <td style={{ ...styles.td, color: rate > 95 ? '#10b981' : (rate > 80 ? '#f59e0b' : '#ef4444'), fontWeight: 600 }}>
+                                                    {rate.toFixed(1)}%
+                                                </td>
+                                                <td style={{ ...styles.td, color: avgLat > 10 ? '#f59e0b' : '#fff' }}>{avgLat.toFixed(2)}s</td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 function PrivateValue({ value, isCurrency = true }: { value: any, isCurrency?: boolean }) {
-    const [visible, setVisible] = useState(false);
+    const [visible, setVisible] = useState(true);
     return (
         <span 
             onClick={() => setVisible(!visible)} 
@@ -755,6 +1096,40 @@ const ProviderBillingView = ({ billing, loading, onRefresh, authFetch, openaiTot
                 </div>
             </div>
 
+            {accountBalance !== undefined && accountBalance !== null && accountBalance < 10.0 && (
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '16px',
+                    background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(239, 68, 68, 0.03))',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    borderRadius: '16px',
+                    padding: '16px 24px',
+                    marginBottom: '32px',
+                }}
+                className="pulse-glow-warning"
+                >
+                    <div style={{
+                        width: '40px',
+                        height: '40px',
+                        borderRadius: '12px',
+                        backgroundColor: 'rgba(239,68,68,0.2)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0
+                    }}>
+                        <AlertTriangle size={24} color="#ef4444" />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                        <h4 style={{ fontSize: '15px', fontWeight: 700, color: '#fff', marginBottom: '4px' }}>CRITICAL: OpenRouter Master Account Liquidity is Low</h4>
+                        <p style={{ fontSize: '13px', color: '#9ca3af', margin: 0 }}>
+                            The current master balance is only <strong style={{ color: '#ef4444' }}>${Number(accountBalance).toFixed(2)}</strong>. Sub-account limits shown below are shared and will fail to execute once the master balance is depleted. Please recharge timely on the <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" style={{ color: '#60a5fa', textDecoration: 'underline', fontWeight: 600 }}>OpenRouter Dashboard</a>.
+                        </p>
+                    </div>
+                </div>
+            )}
+
             {/* Management Key Section */}
             <div style={{ 
                 ...styles.card, 
@@ -790,11 +1165,12 @@ const ProviderBillingView = ({ billing, loading, onRefresh, authFetch, openaiTot
                     <div style={{ flex: 1, position: 'relative' }}>
                         <Lock size={14} style={{ position: 'absolute', left: '12px', top: '14px', color: '#4b5563' }} />
                         <input 
-                            type="password"
+                            type="text"
                             placeholder="sk-or-v1-................................................................"
                             value={mgmtKey}
                             onChange={(e) => setMgmtKey(e.target.value)}
-                            style={{ ...styles.input, paddingLeft: '36px', fontFamily: 'monospace', fontSize: '13px', backgroundColor: 'rgba(0,0,0,0.2)' }}
+                            style={{ ...styles.input, paddingLeft: '36px', fontFamily: 'monospace', fontSize: '13px', backgroundColor: 'rgba(0,0,0,0.2)', WebkitTextSecurity: 'disc', textSecurity: 'disc' } as any}
+                            autoComplete="new-password"
                         />
                     </div>
                     <button 
@@ -892,13 +1268,30 @@ const ProviderBillingView = ({ billing, loading, onRefresh, authFetch, openaiTot
                                                 <div style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em', marginBottom: '8px' }}>Local Usage (MTD)</div>
                                                 <div style={{ fontSize: '24px', fontWeight: 800, color: '#fff' }}>${Number(item.local_mtd || 0).toFixed(3)}</div>
                                             </div>
-                                            <div style={{ padding: '16px', backgroundColor: 'rgba(16,185,129,0.03)', borderRadius: '14px', border: '1px solid rgba(16,185,129,0.1)' }}>
-                                                <div style={{ fontSize: '11px', color: '#10b981', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em', marginBottom: '8px' }}>Available Credit</div>
-                                                <div style={{ fontSize: '24px', fontWeight: 800, color: '#10b981' }}>
-                                                    {item.limit_remaining !== null ? (
-                                                        <PrivateValue value={Number(item.limit_remaining).toFixed(2)} />
-                                                    ) : 'UNLIMITED'}
+                                            <div style={{ padding: '16px', backgroundColor: 'rgba(16,185,129,0.03)', borderRadius: '14px', border: '1px solid rgba(16,185,129,0.1)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                                                <div>
+                                                    <div style={{ fontSize: '11px', color: '#10b981', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em', marginBottom: '8px' }}>Available Credit</div>
+                                                    <div style={{ fontSize: '24px', fontWeight: 800, color: '#10b981' }}>
+                                                        {item.limit_remaining !== null ? (
+                                                            <PrivateValue value={Number(item.limit_remaining).toFixed(2)} />
+                                                        ) : 'UNLIMITED'}
+                                                    </div>
                                                 </div>
+                                                {((item.limit_remaining !== null && accountBalance !== null && accountBalance !== undefined && item.limit_remaining > accountBalance) || (item.limit_remaining === null && accountBalance !== null && accountBalance !== undefined && accountBalance < 10.0)) && (
+                                                    <div style={{ 
+                                                        marginTop: '8px', 
+                                                        fontSize: '10px', 
+                                                        color: '#f87171', 
+                                                        backgroundColor: 'rgba(239, 68, 68, 0.12)', 
+                                                        padding: '6px 8px', 
+                                                        borderRadius: '6px',
+                                                        border: '1px solid rgba(239, 68, 68, 0.25)',
+                                                        fontWeight: 600,
+                                                        lineHeight: '1.2'
+                                                    }}>
+                                                        ⚠️ Shared Master Balance Low (${Number(accountBalance).toFixed(2)})
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
 
@@ -2073,7 +2466,7 @@ function ClientModal({ client, authFetch, onClose, onSave, saving }: { client: C
 function ConfigView({ 
     clients, apiKeys, clientModels, availableModels, loading, onRefresh, 
     onAddApiKey, onToggleApiKey, onDeleteApiKey, onSaveModel, clientCredentials, 
-    onSaveCredentials, globalDefaultModel, onSaveGlobalDefaultModel 
+    onSaveCredentials, globalDefaultModel, onSaveGlobalDefaultModel, authFetch
 }: {
     clients: Client[];
     apiKeys: Record<number, any[]>;
@@ -2089,6 +2482,7 @@ function ConfigView({
     onSaveCredentials: (clientId: number, credentials: any) => void;
     globalDefaultModel: string;
     onSaveGlobalDefaultModel: (model: string) => void;
+    authFetch: (url: string, options?: RequestInit) => Promise<Response>;
 }) {
     const [selectedClient, setSelectedClient] = useState<number>(0);
     const [apiKeyForm, setApiKeyForm] = useState({ provider: 'openai', key: '' });
@@ -2133,7 +2527,7 @@ function ConfigView({
 
     const fetchBalanceAlerts = async () => {
         try {
-            const res = await fetch('/api/mgmt/balance-alerts', { credentials: 'include' });
+            const res = await authFetch('/api/mgmt/status/balance-alerts');
             if (res.ok) setBalanceAlerts(await res.json());
         } catch (err) {
             console.error('Failed to fetch balance alerts', err);
@@ -2384,11 +2778,12 @@ function ConfigView({
                                 <div style={{ marginBottom: '12px' }}>
                                     <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '6px', color: '#9ca3af' }}>API Key</label>
                                     <input
-                                        type="password"
+                                        type="text"
                                         value={apiKeyForm.key}
                                         onChange={(e) => setApiKeyForm({ ...apiKeyForm, key: e.target.value })}
                                         placeholder={apiKeyForm.provider === 'openai' ? 'sk-...' : 'sk-or-v1-...'}
-                                        style={{ ...styles.input, width: '100%', color: '#fff' }}
+                                        style={{ ...styles.input, width: '100%', color: '#fff', WebkitTextSecurity: 'disc', textSecurity: 'disc' } as any}
+                                        autoComplete="new-password"
                                     />
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -4024,6 +4419,7 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
     const [logsLoading, setLogsLoading] = useState(false);
     const [selectedLog, setSelectedLog] = useState<any | null>(null);
     const [showProviderCosts, setShowProviderCosts] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
 
     const load = async () => {
         setLoading(true);
@@ -4076,6 +4472,26 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
         }
     };
 
+    const handleFreeResource = async (id: string) => {
+        if (!confirm('Forcefully abort this processing job to free up resources? This will fail the job instantly.')) return;
+        const res = await authFetch(`/api/mgmt/ai-queue/${id}/free`, { method: 'POST' });
+        if (res.ok) {
+            load();
+        } else {
+            const data = await res.json();
+            alert('Failed to free resource: ' + (data.error || 'Unknown error'));
+        }
+    };
+
+    const handleChangePriority = async (id: string, priority: number) => {
+        await authFetch(`/api/mgmt/ai-queue/${id}/priority`, { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ priority })
+        });
+        load();
+    };
+
     useEffect(() => { load(); }, [filter, clientFilter]);
 
     const statusColor = (s: string) => {
@@ -4085,6 +4501,19 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
         if (s === 'partial') return { bg: 'rgba(245,158,11,0.2)', text: '#f59e0b' };
         return { bg: 'rgba(107,114,128,0.2)', text: '#9ca3af' };
     };
+
+    const filteredItems = items.filter(item => {
+        if (!searchQuery) return true;
+        const q = searchQuery.toLowerCase();
+        
+        const idMatch = String(item.id || '').toLowerCase().includes(q);
+        const localIdMatch = String(item.local_job_id || '').toLowerCase().includes(q);
+        const clientNameMatch = String(item.client_name || '').toLowerCase().includes(q);
+        const audioPathMatch = String(item.audio_path || '').toLowerCase().includes(q);
+        const errorMessageMatch = String(item.error_message || '').toLowerCase().includes(q);
+        
+        return idMatch || localIdMatch || clientNameMatch || audioPathMatch || errorMessageMatch;
+    });
 
     return (
         <div>
@@ -4104,66 +4533,117 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                 ))}
             </div>
 
-            <div style={{ ...styles.card, padding: '16px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', gap: '8px', padding: '4px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                    {[
-                        { id: 'all', label: 'All' },
-                        { id: 'processing', label: 'Processing' },
-                        { id: 'completed', label: 'Completed' },
-                        { id: 'error', label: 'Errors' },
-                        { id: 'partial', label: 'Partial' }
-                    ].map(f => (
-                        <button 
-                            key={f.id}
-                            onClick={() => setFilter(f.id)} 
-                            style={{
-                                ...styles.filterBtn,
-                                border: 'none',
-                                borderRadius: '8px',
-                                padding: '8px 16px',
-                                backgroundColor: filter === f.id ? 'rgba(16,185,129,0.15)' : 'transparent',
-                                color: filter === f.id ? '#10b981' : '#9ca3af',
-                                boxShadow: filter === f.id ? '0 4px 12px rgba(16,185,129,0.1)' : 'none',
-                                transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                                fontWeight: filter === f.id ? 600 : 500
-                            }}
-                        >
-                            {f.label}
-                        </button>
-                    ))}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingRight: '16px', borderRight: '1px solid rgba(255,255,255,0.1)' }}>
-                        <input 
-                            type="checkbox" 
-                            id="showProviderCosts" 
-                            checked={showProviderCosts} 
-                            onChange={(e) => setShowProviderCosts(e.target.checked)}
-                            style={{ cursor: 'pointer', width: '16px', height: '16px' }}
-                        />
-                        <label htmlFor="showProviderCosts" style={{ fontSize: '11px', color: '#9ca3af', cursor: 'pointer', fontWeight: 600 }}>SHOW PROVIDER COSTS</label>
+            <div style={{ ...styles.card, padding: '16px', marginBottom: '20px' }}>
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+                    {/* Left: Tab Switcher */}
+                    <div style={{ display: 'flex', gap: '8px', padding: '4px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                        {[
+                            { id: 'all', label: 'All' },
+                            { id: 'pending', label: 'Queue' },
+                            { id: 'processing', label: 'Processing' },
+                            { id: 'completed', label: 'Completed' },
+                            { id: 'error', label: 'Errors' },
+                            { id: 'partial', label: 'Partial' }
+                        ].map(f => (
+                            <button 
+                                key={f.id}
+                                onClick={() => setFilter(f.id)} 
+                                style={{
+                                    ...styles.filterBtn,
+                                    border: 'none',
+                                    borderRadius: '8px',
+                                    padding: '8px 16px',
+                                    backgroundColor: filter === f.id ? 'rgba(16,185,129,0.15)' : 'transparent',
+                                    color: filter === f.id ? '#10b981' : '#9ca3af',
+                                    boxShadow: filter === f.id ? '0 4px 12px rgba(16,185,129,0.1)' : 'none',
+                                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                                    fontWeight: filter === f.id ? 600 : 500
+                                }}
+                            >
+                                {f.label}
+                            </button>
+                        ))}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <label style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 800, letterSpacing: '0.05em' }}>FILTER BY CLIENT:</label>
-                        <select 
-                            value={clientFilter} 
-                            onChange={(e) => setClientFilter(e.target.value)}
-                            style={{ 
-                                ...styles.input, 
-                                width: '180px', 
-                                backgroundColor: 'rgba(255,255,255,0.02)', 
-                                border: '1px solid rgba(255,255,255,0.1)',
+
+                    {/* Middle/Right: Beautiful Search Bar */}
+                    <div style={{ flex: 1, minWidth: '320px', position: 'relative' }}>
+                        <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '14px', color: '#6b7280' }}>🔍</span>
+                        <input
+                            type="text"
+                            placeholder="Search by Job ID, Client Name, File Name, or Error..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            style={{
+                                ...styles.input,
+                                width: '100%',
+                                paddingLeft: '38px',
+                                paddingRight: searchQuery ? '32px' : '12px',
                                 marginBottom: 0,
-                                fontSize: '12px',
-                                padding: '6px 10px',
-                                color: '#fff'
+                                fontSize: '13px',
+                                backgroundColor: 'rgba(255,255,255,0.02)',
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                borderRadius: '8px',
+                                color: '#fff',
+                                transition: 'all 0.2s'
                             }}
-                        >
-                            <option value="all" style={{ backgroundColor: '#111118', color: '#fff' }}>All Clients</option>
-                            {clients.map(c => (
-                                <option key={c.id} value={c.id} style={{ backgroundColor: '#111118', color: '#fff' }}>{c.name}</option>
-                            ))}
-                        </select>
+                        />
+                        {searchQuery && (
+                            <button
+                                onClick={() => setSearchQuery('')}
+                                style={{
+                                    position: 'absolute',
+                                    right: '10px',
+                                    top: '50%',
+                                    transform: 'translateY(-50%)',
+                                    background: 'none',
+                                    border: 'none',
+                                    color: '#9ca3af',
+                                    cursor: 'pointer',
+                                    fontSize: '14px',
+                                    padding: '4px'
+                                }}
+                            >
+                                &times;
+                            </button>
+                        )}
+                    </div>
+                </div>
+
+                {/* Sub-row for filters and toggles */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.05)', flexWrap: 'wrap', gap: '16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingRight: '16px', borderRight: '1px solid rgba(255,255,255,0.1)' }}>
+                            <input 
+                                type="checkbox" 
+                                id="showProviderCosts" 
+                                checked={showProviderCosts} 
+                                onChange={(e) => setShowProviderCosts(e.target.checked)}
+                                style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+                            />
+                            <label htmlFor="showProviderCosts" style={{ fontSize: '11px', color: '#9ca3af', cursor: 'pointer', fontWeight: 600 }}>SHOW PROVIDER COSTS</label>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <label style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 800, letterSpacing: '0.05em' }}>FILTER BY CLIENT:</label>
+                            <select 
+                                value={clientFilter} 
+                                onChange={(e) => setClientFilter(e.target.value)}
+                                style={{ 
+                                    ...styles.input, 
+                                    width: '180px', 
+                                    backgroundColor: 'rgba(255,255,255,0.02)', 
+                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    marginBottom: 0,
+                                    fontSize: '12px',
+                                    padding: '6px 10px',
+                                    color: '#fff'
+                                }}
+                            >
+                                <option value="all" style={{ backgroundColor: '#111118', color: '#fff' }}>All Clients</option>
+                                {clients.map(c => (
+                                    <option key={c.id} value={c.id} style={{ backgroundColor: '#111118', color: '#fff' }}>{c.name}</option>
+                                ))}
+                            </select>
+                        </div>
                     </div>
                     <button onClick={load} style={{ ...styles.buttonSecondary, padding: '8px 16px', gap: '8px', fontSize: '12px' }}>
                         🔄 {loading ? '...' : 'REFRESH'}
@@ -4188,8 +4668,9 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                     <th style={styles.th}>Client</th>
                                     <th style={styles.th}>Local Job ID</th>
                                     <th style={styles.th}>Modules</th>
-                                    <th style={styles.th}>Status</th>
-                                    <th style={styles.th}>File Duration</th>
+                                    <th style={styles.th}>Queue Status</th>
+                                    <th style={styles.th}>Priority</th>
+                                    <th style={styles.th}>Duration</th>
                                     <th style={styles.th}>AI Latency</th>
                                     <th style={styles.th}>Billed (USD)</th>
                                     {showProviderCosts && <th style={{ ...styles.th, color: '#f59e0b' }}>Provider (USD)</th>}
@@ -4198,7 +4679,7 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                 </tr>
                             </thead>
                             <tbody>
-                                {items.map(item => {
+                                {filteredItems.map(item => {
                                     const sc = statusColor(item.status);
                                     const modules: string[] = (() => {
                                         try { return JSON.parse(item.modules_requested || '[]'); } catch { return []; }
@@ -4237,9 +4718,9 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                                 <td style={styles.td}>
                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                                         <span style={{ padding: '4px 10px', borderRadius: '9999px', fontSize: '11px', fontWeight: 600, backgroundColor: sc.bg, color: sc.text, width: 'fit-content' }}>
-                                                            {item.status}
+                                                            {item.queue_status || item.status}
                                                         </span>
-                                                        {item.status === 'processing' && item.sub_status && (
+                                                        {item.queue_status === 'processing' && item.sub_status && (
                                                             <div style={{ fontSize: '10px', color: '#3b82f6', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '4px' }}>
                                                                 <span className="pulse-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#3b82f6' }} />
                                                                 {item.sub_status}
@@ -4248,7 +4729,18 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                                     </div>
                                                 </td>
                                                 <td style={styles.td}>
-                                                    <div style={{ fontSize: '12px', fontWeight: 600, color: '#60a5fa' }}>
+                                                    {item.queue_status === 'pending' ? (
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                            <button onClick={() => handleChangePriority(item.id, (item.priority || 0) + 1)} style={{ background: 'none', border: 'none', color: '#10b981', cursor: 'pointer', padding: '2px' }}>⬆️</button>
+                                                            <span style={{ fontSize: '14px', fontWeight: 'bold' }}>{item.priority || 0}</span>
+                                                            <button onClick={() => handleChangePriority(item.id, (item.priority || 0) - 1)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '2px' }}>⬇️</button>
+                                                        </div>
+                                                    ) : (
+                                                        <span style={{ color: '#6b7280', fontSize: '12px' }}>-</span>
+                                                    )}
+                                                </td>
+                                                <td style={styles.td}>
+                                                    <div style={{ fontSize: '13px', fontWeight: 600, color: '#60a5fa' }}>
                                                         {item.file_duration ? (() => {
                                                             const d = item.file_duration;
                                                             return d < 60 ? `${d}s` : `${Math.floor(d/60)}m ${Math.round(d%60)}s`;
@@ -4304,13 +4796,22 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                                         <button onClick={() => handleDelete(item.id)} style={{ ...styles.buttonSecondary, padding: '4px 8px', fontSize: '11px', color: '#ef4444' }}>
                                                             🗑️ Delete
                                                         </button>
-                                                        {item.status !== 'processing' && (
+                                                        {item.status !== 'processing' && item.queue_status !== 'processing' && item.queue_status !== 'pending' && (
                                                             <button 
                                                                 onClick={() => handleRetry(item.id)} 
                                                                 style={{ ...styles.buttonSecondary, padding: '4px 8px', fontSize: '11px', color: '#10b981', borderColor: '#10b981' }}
                                                                 title="Rerun failed or skipped modules"
                                                             >
                                                                 🔄 Rerun
+                                                            </button>
+                                                        )}
+                                                        {item.queue_status === 'processing' && (
+                                                            <button 
+                                                                onClick={() => handleFreeResource(item.id)} 
+                                                                style={{ ...styles.buttonDanger, padding: '4px 8px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                                                title="Abort this job instantly"
+                                                            >
+                                                                🛑 Free Resource
                                                             </button>
                                                         )}
                                                     </div>
@@ -4327,25 +4828,67 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                                                 <div style={{ fontSize: '11px', color: '#6b7280' }}>No child requests found for this job ID.</div>
                                                             ) : (
                                                                 <>
-                                                                    {/* Simple Billing Summary */}
-                                                                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px', padding: '12px', backgroundColor: 'rgba(16,185,129,0.05)', borderRadius: '8px', border: '1px solid rgba(16,185,129,0.1)' }}>
-                                                                        <div style={{ width: '100%', fontSize: '10px', color: '#10b981', fontWeight: 700, textTransform: 'uppercase', marginBottom: '4px' }}>Billing Summary</div>
-                                                                        {(() => {
-                                                                            const totals: Record<string, number> = {};
-                                                                            jobLogs.forEach(l => {
-                                                                                const name = l.endpoint?.includes('transcription') ? 'Transcription' :
-                                                                                           l.endpoint?.includes('subtitles') ? 'Subtitles' :
-                                                                                           l.endpoint?.split('/').pop() || 'Other';
-                                                                                totals[name] = (totals[name] || 0) + (l.billed_cost || 0);
-                                                                            });
-                                                                            return Object.entries(totals).map(([name, cost]) => (
-                                                                                <div key={name} style={{ padding: '4px 10px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '6px', fontSize: '11px' }}>
-                                                                                    <span style={{ color: '#9ca3af' }}>{name}:</span> <span style={{ fontWeight: 700, color: '#fff' }}>${cost.toFixed(2)}</span>
+                                                                    {/* Side-by-Side Media Info and Billing Dashboard */}
+                                                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px', marginBottom: '20px' }}>
+                                                                        {/* Media Info Card */}
+                                                                        <div style={{ padding: '16px', backgroundColor: 'rgba(59,130,246,0.04)', borderRadius: '12px', border: '1px solid rgba(59,130,246,0.1)' }}>
+                                                                            <div style={{ fontSize: '11px', color: '#60a5fa', fontWeight: 700, textTransform: 'uppercase', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                                                📁 Media File Information
+                                                                            </div>
+                                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
+                                                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                                                                    <span style={{ color: '#9ca3af', fontSize: '10px', textTransform: 'uppercase' }}>Source Audio Path</span>
+                                                                                    <span style={{ fontFamily: 'monospace', color: '#fff', wordBreak: 'break-all', backgroundColor: 'rgba(0,0,0,0.2)', padding: '6px 8px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.03)' }} title={item.audio_path}>
+                                                                                        {item.audio_path || 'N/A'}
+                                                                                    </span>
                                                                                 </div>
-                                                                            ));
-                                                                        })()}
-                                                                        <div style={{ padding: '4px 10px', backgroundColor: 'rgba(16,185,129,0.2)', borderRadius: '6px', fontSize: '11px', marginLeft: 'auto' }}>
-                                                                           <span style={{ color: '#fff', fontWeight: 800 }}>Total: ${jobLogs.reduce((s, l) => s + (l.billed_cost || 0), 0).toFixed(2)}</span>
+                                                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '4px' }}>
+                                                                                    <div>
+                                                                                        <span style={{ color: '#9ca3af', display: 'block', fontSize: '10px', textTransform: 'uppercase' }}>File Name</span>
+                                                                                        <span style={{ fontWeight: 600, color: '#60a5fa', fontSize: '13px' }}>
+                                                                                            {item.audio_path ? item.audio_path.split(/[\\/]/).pop() : 'N/A'}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                    <div>
+                                                                                        <span style={{ color: '#9ca3af', display: 'block', fontSize: '10px', textTransform: 'uppercase' }}>Media Duration</span>
+                                                                                        <span style={{ fontWeight: 600, color: '#fff', fontSize: '13px' }}>
+                                                                                            {item.file_duration ? (() => {
+                                                                                                const d = item.file_duration;
+                                                                                                return d < 60 ? `${d}s` : `${Math.floor(d/60)}m ${Math.round(d%60)}s`;
+                                                                                            })() : 'N/A'}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+
+                                                                        {/* Billing Summary Card */}
+                                                                        <div style={{ padding: '16px', backgroundColor: 'rgba(16,185,129,0.04)', borderRadius: '12px', border: '1px solid rgba(16,185,129,0.1)', display: 'flex', flexDirection: 'column' }}>
+                                                                            <div style={{ fontSize: '11px', color: '#10b981', fontWeight: 700, textTransform: 'uppercase', marginBottom: '10px' }}>
+                                                                                💰 API Billing Summary
+                                                                            </div>
+                                                                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                                                                                {(() => {
+                                                                                    const totals: Record<string, number> = {};
+                                                                                    jobLogs.forEach(l => {
+                                                                                        const name = l.endpoint?.includes('transcription') ? 'Transcription' :
+                                                                                                   l.endpoint?.includes('subtitles') ? 'Subtitles' :
+                                                                                                   l.endpoint?.split('/').pop() || 'Other';
+                                                                                        totals[name] = (totals[name] || 0) + (l.billed_cost || 0);
+                                                                                    });
+                                                                                    if (Object.keys(totals).length === 0) {
+                                                                                        return <span style={{ color: '#6b7280', fontSize: '11px' }}>No billed events recorded yet.</span>;
+                                                                                    }
+                                                                                    return Object.entries(totals).map(([name, cost]) => (
+                                                                                        <div key={name} style={{ padding: '4px 8px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '6px', fontSize: '11px' }}>
+                                                                                            <span style={{ color: '#9ca3af' }}>{name}:</span> <span style={{ fontWeight: 700, color: '#fff' }}>${cost.toFixed(4)}</span>
+                                                                                        </div>
+                                                                                    ));
+                                                                                })()}
+                                                                            </div>
+                                                                            <div style={{ padding: '8px 14px', backgroundColor: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: '8px', fontSize: '13px', marginTop: 'auto', alignSelf: 'flex-start', color: '#10b981', fontWeight: 800 }}>
+                                                                                Total Billed: ${jobLogs.reduce((s, l) => s + (l.billed_cost || 0), 0).toFixed(4)}
+                                                                            </div>
                                                                         </div>
                                                                     </div>
 
@@ -4405,6 +4948,192 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
                                                                 </table>
                                                                 </>
                                                             )}
+
+                                                            {/* AI Module Database Results (Source of Truth) */}
+                                                            {(() => {
+                                                                const isProcessing = item.status === 'processing' || item.status === 'pending';
+                                                                if (isProcessing) {
+                                                                    return (
+                                                                        <div style={{ marginTop: '24px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '20px' }}>
+                                                                            <h4 style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', color: '#9ca3af', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                                🤖 AI Module Database Results (Source of Truth)
+                                                                            </h4>
+                                                                            <div style={{ padding: '16px', backgroundColor: 'rgba(59,130,246,0.04)', borderRadius: '10px', border: '1px solid rgba(59,130,246,0.1)', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                                                                <span className="pulse-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#3b82f6', display: 'inline-block', boxShadow: '0 0 8px #3b82f6' }} />
+                                                                                <span style={{ fontSize: '12px', color: '#9ca3af' }}>
+                                                                                    Job is currently <strong>{item.status.toUpperCase()}</strong>. Final SQLite results will populate here once processing completes.
+                                                                                </span>
+                                                                            </div>
+                                                                        </div>
+                                                                    );
+                                                                }
+                                                                const parsedResults = (() => {
+                                                                    try {
+                                                                        return typeof item.result_data === 'string' ? JSON.parse(item.result_data) : item.result_data;
+                                                                    } catch (e) {
+                                                                        return null;
+                                                                    }
+                                                                })();
+                                                                if (!parsedResults || !Array.isArray(parsedResults) || parsedResults.length === 0) return null;
+                                                                return (
+                                                                    <div style={{ marginTop: '24px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '20px' }}>
+                                                                        <h4 style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', color: '#9ca3af', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                            🤖 AI Module Database Results (Source of Truth)
+                                                                        </h4>
+                                                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px' }}>
+                                                                            {parsedResults.map((mod: any, index: number) => {
+                                                                                const name = mod.module_name || mod.moduleName || 'Original / Transcription';
+                                                                                const lang = mod.result_type || mod.resultType || 'original';
+                                                                                const data = mod.result_data || mod.resultData;
+                                                                                const hasError = data && (data.error || (typeof data === 'object' && Object.keys(data).length === 1 && data.error));
+                                                                                const errorText = hasError ? (data.error || 'Failed to process') : null;
+                                                                                
+                                                                                // Surgically map this module to its corresponding child log inside jobLogs to calculate absolute Request In / Out times
+                                                                                const matchingLog = jobLogs.find(l => {
+                                                                                    const ep = (l.endpoint || '').toLowerCase();
+                                                                                    const mName = name.toLowerCase();
+                                                                                    const targetLang = lang.replace('subtitle_', '').toLowerCase();
+                                                                                    
+                                                                                    if (mName === 'transcription' && ep.includes('transcription')) return true;
+                                                                                    if (mName === 'subtitles' && ep.includes('subtitles')) return true;
+                                                                                    if (mName === 'metadata' && ep.includes('metadata')) return true;
+                                                                                    if (mName === 'ad_breaks' && ep.includes('ad_breaks')) return true;
+                                                                                    if (mName === 'promo_breaks' && ep.includes('promo_breaks')) return true;
+                                                                                    if (mName === 'subtitle_translation' && ep.includes('subtitle_translation') && ep.includes(targetLang)) return true;
+                                                                                    return false;
+                                                                                });
+
+                                                                                // Calculate absolute timestamps
+                                                                                let inTimeStr = 'N/A';
+                                                                                let outTimeStr = 'N/A';
+                                                                                let latencyStr = 'N/A';
+
+                                                                                if (matchingLog) {
+                                                                                    const outDate = new Date(matchingLog.created_at.includes('Z') ? matchingLog.created_at : matchingLog.created_at + 'Z');
+                                                                                    const latencyMs = matchingLog.latency_ms || matchingLog.latencyMs || 0;
+                                                                                    const inDate = new Date(outDate.getTime() - latencyMs);
+                                                                                    
+                                                                                    const formatTimeWithMs = (d: Date) => {
+                                                                                        return d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+                                                                                    };
+                                                                                    
+                                                                                    inTimeStr = formatTimeWithMs(inDate);
+                                                                                    outTimeStr = formatTimeWithMs(outDate);
+                                                                                    latencyStr = `${(latencyMs / 1000).toFixed(2)}s (${latencyMs.toLocaleString()} ms)`;
+                                                                                } else {
+                                                                                    const latencyMs = mod.processing_time_ms || mod.processingTimeMs || 0;
+                                                                                    if (latencyMs > 0) {
+                                                                                        latencyStr = `${(latencyMs / 1000).toFixed(2)}s (${latencyMs.toLocaleString()} ms)`;
+                                                                                    }
+                                                                                }
+
+                                                                                return (
+                                                                                    <div 
+                                                                                        key={index} 
+                                                                                        style={{ 
+                                                                                            padding: '14px', 
+                                                                                            backgroundColor: 'rgba(255,255,255,0.02)', 
+                                                                                            borderRadius: '10px', 
+                                                                                            border: hasError ? '1px solid rgba(239, 68, 68, 0.2)' : '1px solid rgba(16, 185, 129, 0.2)',
+                                                                                            display: 'flex',
+                                                                                            flexDirection: 'column',
+                                                                                            gap: '8px'
+                                                                                        }}
+                                                                                    >
+                                                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                                                            <span style={{ fontSize: '13px', fontWeight: 700, color: hasError ? '#ef4444' : '#10b981' }}>
+                                                                                                {name}
+                                                                                            </span>
+                                                                                            <span style={{ 
+                                                                                                fontSize: '9px', 
+                                                                                                fontWeight: 700, 
+                                                                                                textTransform: 'uppercase', 
+                                                                                                padding: '2px 6px', 
+                                                                                                borderRadius: '4px',
+                                                                                                backgroundColor: hasError ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)',
+                                                                                                color: hasError ? '#ef4444' : '#10b981'
+                                                                                            }}>
+                                                                                                {lang}
+                                                                                            </span>
+                                                                                        </div>
+                                                                                        <div style={{ fontSize: '11px', color: '#9ca3af', lineHeight: '1.4' }}>
+                                                                                            {hasError ? (
+                                                                                                <div style={{ color: '#fca5a5', fontWeight: 500, backgroundColor: 'rgba(239,68,68,0.05)', padding: '8px', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.1)', wordBreak: 'break-all', overflowWrap: 'anywhere' }}>
+                                                                                                    ⚠️ <strong>Error:</strong> {errorText}
+                                                                                                </div>
+                                                                                            ) : (
+                                                                                                <div style={{ color: '#a7f3d0' }}>
+                                                                                                    ✅ <strong>Processed successfully.</strong>
+                                                                                                    <div style={{ fontSize: '10px', color: '#6b7280', marginTop: '4px', fontFamily: 'monospace' }}>
+                                                                                                        Size: {JSON.stringify(data).length} chars
+                                                                                                    </div>
+                                                                                                </div>
+                                                                                            )}
+                                                                                        </div>
+                                                                                        
+                                                                                        {/* Timestamps Section */}
+                                                                                        <div style={{ 
+                                                                                            marginTop: '4px',
+                                                                                            padding: '8px 10px', 
+                                                                                            backgroundColor: 'rgba(255,255,255,0.015)', 
+                                                                                            borderRadius: '8px', 
+                                                                                            border: '1px solid rgba(255,255,255,0.03)',
+                                                                                            fontSize: '11px',
+                                                                                            display: 'flex',
+                                                                                            flexDirection: 'column',
+                                                                                            gap: '5px'
+                                                                                        }}>
+                                                                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                                                                <span style={{ color: '#9ca3af', fontWeight: 500 }}>🕒 Request In:</span>
+                                                                                                <span style={{ fontFamily: 'monospace', color: '#fff', fontSize: '11px', fontWeight: 600 }}>{inTimeStr}</span>
+                                                                                            </div>
+                                                                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                                                                <span style={{ color: '#9ca3af', fontWeight: 500 }}>⏱️ Request Out:</span>
+                                                                                                <span style={{ fontFamily: 'monospace', color: '#fff', fontSize: '11px', fontWeight: 600 }}>{outTimeStr}</span>
+                                                                                            </div>
+                                                                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '5px', marginTop: '3px' }}>
+                                                                                                <span style={{ color: '#9ca3af', fontWeight: 500 }}>⚡ Latency:</span>
+                                                                                                <span style={{ fontFamily: 'monospace', color: '#3b82f6', fontWeight: 700 }}>{latencyStr}</span>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                        <button
+                                                                                            onClick={() => {
+                                                                                                setSelectedLog({
+                                                                                                    id: `db-res-${item.id}-${index}`,
+                                                                                                    request_id: `db-payload-${index}`,
+                                                                                                    endpoint: `/api/ai/job/${name}`,
+                                                                                                    model: mod.model || 'AI Model',
+                                                                                                    response_status: hasError ? 403 : 200,
+                                                                                                    cost_usd: mod.api_cost || mod.apiCost || 0,
+                                                                                                    latency_ms: mod.processing_time_ms || mod.processingTimeMs || 0,
+                                                                                                    request_body: JSON.stringify({ module: name, lang }),
+                                                                                                    response_body: JSON.stringify(data),
+                                                                                                    error_message: hasError ? errorText : null
+                                                                                                });
+                                                                                            }}
+                                                                                            style={{
+                                                                                                marginTop: 'auto',
+                                                                                                alignSelf: 'flex-start',
+                                                                                                background: 'rgba(255,255,255,0.03)',
+                                                                                                border: '1px solid rgba(255,255,255,0.08)',
+                                                                                                borderRadius: '6px',
+                                                                                                padding: '4px 10px',
+                                                                                                color: '#fff',
+                                                                                                fontSize: '10px',
+                                                                                                cursor: 'pointer',
+                                                                                                fontWeight: 600,
+                                                                                                transition: 'all 0.2s'
+                                                                                            }}
+                                                                                        >
+                                                                                            🔍 Inspect DB Output
+                                                                                        </button>
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })()}
                                                         </div>
                                                     </td>
                                                 </tr>

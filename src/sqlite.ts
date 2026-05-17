@@ -407,7 +407,9 @@ function createTables() {
         `ALTER TABLE clients ADD COLUMN allow_rate_card_fetch INTEGER DEFAULT 0`,
         `ALTER TABLE client_usage ADD COLUMN duration_seconds REAL DEFAULT 0`,
         `ALTER TABLE client_usage_logs ADD COLUMN duration_seconds REAL DEFAULT 0`,
-        `ALTER TABLE ai_jobs ADD COLUMN file_duration REAL DEFAULT 0`
+        `ALTER TABLE ai_jobs ADD COLUMN file_duration REAL DEFAULT 0`,
+        `ALTER TABLE ai_jobs ADD COLUMN queue_status TEXT DEFAULT 'pending'`,
+        `ALTER TABLE ai_jobs ADD COLUMN priority INTEGER DEFAULT 0`
     ];
     for (const sql of migrations) {
         try { db.exec(sql); } catch (_) { /* column already exists */ }

@@ -77,90 +77,6 @@ function decrypt(text) {
     }
 }
 exports.mgmtRouter = (0, express_1.Router)();
-// Balance alerts for dashboard notification
-exports.mgmtRouter.get('/status/balance-alerts', async (req, res) => {
-    var _a;
-    try {
-        const db = (0, sqlite_1.getDatabase)();
-        // Check for specific client (if API key used) or all (if admin)
-        let clientId = null;
-        // 1. Check for X-Client-API-Key 
-        const apiKey = req.header('X-Client-API-Key') || req.query.apiKey;
-        if (apiKey) {
-            const client = db.prepare('SELECT id FROM clients WHERE api_key = ?').get(apiKey);
-            if (client)
-                clientId = client.id;
-        }
-        // 2. Check for session (admin or user dashboard)
-        const sessionCookie = (_a = req.cookies) === null || _a === void 0 ? void 0 : _a.cuepoint_session;
-        if (!clientId && sessionCookie) {
-            const session = typeof sessionCookie === 'string' ? JSON.parse(sessionCookie) : sessionCookie;
-            if (session.clientId)
-                clientId = session.clientId;
-            // If they are ADMIN and no specific clientId requested, return all warnings?
-            // No, usually the dashboard is client-contextual.
-        }
-        if (!clientId && !req.adminUser) {
-            return res.json({ alerts: [] });
-        }
-        let sql = `
-            SELECT id, name, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold 
-            FROM clients 
-            WHERE status = 'active'
-        `;
-        const params = [];
-        if (clientId) {
-            sql += ' AND id = ?';
-            params.push(clientId);
-        }
-        const clients = db.prepare(sql).all(...params);
-        const alerts = [];
-        for (const client of clients) {
-            const threshold = client.provider_warn_threshold || 25.0;
-            // Assume "initial" or "normal" top-up is a decent amount, e.g. $10 or $20.
-            // If balance is < threshold % of something... 
-            // Better: If balance is absolute low or % of 'recharge amount' 
-            // since we don't track 'total cumulative top-ups' easily, we use a simple logic:
-            // If balance is below $1 or below something... 
-            // Actually, let's just use the USER'S suggestion: "when the amount is around 25 % left"
-            // We need a 'total top-up' field? No, lets suggest a hard floor or just use the field as 'alert when below this value'.
-            // Actually, the user says "around 25% left", which implies we know the total.
-            // Let's add 'total_openai_recharge' or similar? 
-            // Logic: Warn if balance is low. 
-            // We use a safe floor of $2.50 or the configured threshold if available.
-            const openaiBal = client.provider_bal_openai || 0;
-            const routerBal = client.provider_bal_openrouter || 0;
-            // Check OpenAI/Whisper
-            if (openaiBal <= threshold) {
-                alerts.push({
-                    clientId: client.id,
-                    clientName: client.name,
-                    provider: 'OpenAI',
-                    isExhausted: openaiBal <= 0,
-                    message: apiKey
-                        ? (openaiBal <= 0 ? 'Service Suspended: Provider balance exhausted. Please contact support.' : `Your transcription service balance is low. Please contact support.`)
-                        : `Low OpenAI balance for ${client.name} ($${openaiBal.toFixed(2)}).`
-                });
-            }
-            // Check OpenRouter (Claude/Gemini)
-            if (routerBal <= threshold) {
-                alerts.push({
-                    clientId: client.id,
-                    clientName: client.name,
-                    provider: 'OpenRouter',
-                    isExhausted: routerBal <= 0,
-                    message: apiKey
-                        ? (routerBal <= 0 ? 'Service Suspended: AI analysis balance exhausted. Please contact support.' : `Your AI analysis service balance is low. Please contact support.`)
-                        : `Low OpenRouter balance for ${client.name} ($${routerBal.toFixed(2)}).`
-                });
-            }
-        }
-        res.json({ alerts });
-    }
-    catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
 // Auth middleware for mgmt routes - Supports Admin session OR Client API Key
 const requireAuth = async (req, res, next) => {
     var _a;
@@ -218,6 +134,55 @@ const requireAuth = async (req, res, next) => {
 // Aliases for readability if needed
 const requireAdminAuth = requireAuth;
 exports.requireAdminAuth = requireAdminAuth;
+// Balance alerts for dashboard notification - staff only
+exports.mgmtRouter.get('/status/balance-alerts', requireAdminAuth, async (req, res) => {
+    try {
+        // Ensure only admin/staff can access this
+        if (!req.adminUser) {
+            return res.status(403).json({ error: 'Access denied: Staff only' });
+        }
+        const db = (0, sqlite_1.getDatabase)();
+        const clients = db.prepare(`
+            SELECT id, name, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold 
+            FROM clients 
+            WHERE status = 'active'
+        `).all();
+        const alerts = [];
+        for (const client of clients) {
+            const threshold = client.provider_warn_threshold || 25.0;
+            const openaiBal = client.provider_bal_openai || 0;
+            const routerBal = client.provider_bal_openrouter || 0;
+            // Check OpenAI/Whisper
+            if (openaiBal <= threshold) {
+                alerts.push({
+                    clientId: client.id,
+                    clientName: client.name,
+                    client_name: client.name,
+                    provider: 'OpenAI',
+                    balance: openaiBal,
+                    isExhausted: openaiBal <= 0,
+                    message: `Low OpenAI balance for ${client.name} ($${openaiBal.toFixed(2)}).`
+                });
+            }
+            // Check OpenRouter (Claude/Gemini)
+            if (routerBal <= threshold) {
+                alerts.push({
+                    clientId: client.id,
+                    clientName: client.name,
+                    client_name: client.name,
+                    provider: 'OpenRouter',
+                    balance: routerBal,
+                    isExhausted: routerBal <= 0,
+                    message: `Low OpenRouter balance for ${client.name} ($${routerBal.toFixed(2)}).`
+                });
+            }
+        }
+        res.json(alerts);
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 // Login endpoint
 exports.mgmtRouter.post('/auth/login', async (req, res) => {
     try {
@@ -250,7 +215,7 @@ exports.mgmtRouter.get('/clients', requireAdminAuth, async (req, res) => {
 });
 exports.mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
     try {
-        const { name, billing_margin_flat, billing_margin_percent, contract_start, contract_end, setup_fee, plan, module_rates, billing_type, credits, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold } = req.body;
+        const { name, billing_margin_flat, billing_margin_percent, contract_start, contract_end, setup_fee, plan, module_rates, billing_type, credits, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold, allow_rate_card_fetch } = req.body;
         if (!name)
             return res.status(400).json({ error: 'Client name is required' });
         const apiKey = `CUE-${crypto_1.default.randomBytes(12).toString('hex').toUpperCase()}`;
@@ -264,10 +229,11 @@ exports.mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
                 client_uuid, name, api_key, billing_margin_flat, billing_margin_percent, 
                 contract_start, contract_end, setup_fee, plan, status, 
                 module_rates, billing_type, credits, short_code, description,
-                provider_bal_openai, provider_bal_openrouter, provider_warn_threshold
+                provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
+                allow_rate_card_fetch
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(clientUuid, name, apiKey, billing_margin_flat || 0.50, billing_margin_percent || 20.0, contract_start || today, contract_end || null, setup_fee || 0, plan || 'Professional', moduleRatesStr, billing_type || 'PER_REQUEST', credits || 0, shortCode, description || null, provider_bal_openai || 0, provider_bal_openrouter || 0, provider_warn_threshold || 25.0);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(clientUuid, name, apiKey, billing_margin_flat || 0.50, billing_margin_percent || 20.0, contract_start || today, contract_end || null, setup_fee || 0, plan || 'Professional', moduleRatesStr, billing_type || 'PER_REQUEST', credits || 0, shortCode, description || null, provider_bal_openai || 0, provider_bal_openrouter || 0, provider_warn_threshold || 25.0, allow_rate_card_fetch ? 1 : 0);
         const newClient = db.prepare('SELECT * FROM clients WHERE id = ?').get(result.lastInsertRowid);
         if (newClient && typeof newClient.module_rates === 'string') {
             newClient.module_rates = JSON.parse(newClient.module_rates);
@@ -281,7 +247,7 @@ exports.mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
 });
 exports.mgmtRouter.put('/clients/:id', requireAdminAuth, async (req, res) => {
     try {
-        const { name, billing_margin_flat, billing_margin_percent, contract_start, contract_end, setup_fee, plan, status, module_rates, billing_type, credits, short_code, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold } = req.body;
+        const { name, billing_margin_flat, billing_margin_percent, contract_start, contract_end, setup_fee, plan, status, module_rates, billing_type, credits, short_code, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold, allow_rate_card_fetch } = req.body;
         const clientId = parseInt(String(req.params.id));
         const moduleRatesStr = module_rates ? JSON.stringify(module_rates) : null;
         const db = (0, sqlite_1.getDatabase)();
@@ -292,9 +258,10 @@ exports.mgmtRouter.put('/clients/:id', requireAdminAuth, async (req, res) => {
                 status = ?, module_rates = ?, billing_type = ?, credits = ?, 
                 short_code = ?, description = ?, 
                 provider_bal_openai = ?, provider_bal_openrouter = ?, provider_warn_threshold = ?,
-                updated_at = datetime('now')
+                allow_rate_card_fetch = ?,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        `).run(name, billing_margin_flat, billing_margin_percent, contract_start, contract_end || null, setup_fee, plan, status, moduleRatesStr, billing_type, credits, short_code, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold, clientId);
+        `).run(name, billing_margin_flat, billing_margin_percent, contract_start, contract_end || null, setup_fee, plan, status, moduleRatesStr, billing_type, credits, short_code, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold, allow_rate_card_fetch ? 1 : 0, clientId);
         // Auto-sync module_rates → module_pricing so getModulePricing() always returns correct rates
         if (module_rates && typeof module_rates === 'object') {
             const today = new Date().toISOString().split('T')[0];
@@ -311,6 +278,10 @@ exports.mgmtRouter.put('/clients/:id', requireAdminAuth, async (req, res) => {
             }
             logger_1.logger.info('SYSTEM', 'MODULE_PRICING_SYNCED', `Synced ${Object.keys(module_rates).length} module rates to pricing table for client ${clientId}`);
         }
+        const updatedClient = db.prepare('SELECT api_key FROM clients WHERE id = ?').get(clientId);
+        if (updatedClient) {
+            (0, license_cache_1.invalidateLicenseInCache)(updatedClient.api_key);
+        }
         logger_1.logger.info('SYSTEM', 'CLIENT_UPDATED', `Client ${name} updated`, { clientId, status, plan });
         res.json({ success: true });
     }
@@ -322,6 +293,10 @@ exports.mgmtRouter.delete('/clients/:id', requireAdminAuth, async (req, res) => 
     const clientId = parseInt(String(req.params.id));
     const db = (0, sqlite_1.getDatabase)();
     logger_1.logger.warn('SYSTEM', 'CLIENT_DELETED', `Client ${clientId} deleted`);
+    const client = db.prepare('SELECT api_key FROM clients WHERE id = ?').get(clientId);
+    if (client) {
+        (0, license_cache_1.invalidateLicenseInCache)(client.api_key);
+    }
     db.prepare('DELETE FROM clients WHERE id = ?').run(clientId);
     res.json({ success: true });
 });
@@ -329,6 +304,10 @@ exports.mgmtRouter.post('/clients/:id/regenerate-key', requireAdminAuth, async (
     const clientId = parseInt(String(req.params.id));
     const newApiKey = `CUE-${crypto_1.default.randomBytes(12).toString('hex').toUpperCase()}`;
     const db = (0, sqlite_1.getDatabase)();
+    const oldClient = db.prepare('SELECT api_key FROM clients WHERE id = ?').get(clientId);
+    if (oldClient) {
+        (0, license_cache_1.invalidateLicenseInCache)(oldClient.api_key);
+    }
     db.prepare('UPDATE clients SET api_key = ?, updated_at = datetime(\'now\') WHERE id = ?').run(newApiKey, clientId);
     logger_1.logger.info('SYSTEM', 'CLIENT_API_KEY_REGENERATED', `API key regenerated for client ${clientId}`);
     res.json({ apiKey: newApiKey });
@@ -669,11 +648,15 @@ exports.mgmtRouter.post('/clients/:id/promote-to-example', requireAdminAuth, asy
 exports.mgmtRouter.get('/clients/config', async (req, res) => {
     try {
         const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
-        if (!apiKey)
+        console.log(`[MgmtConfig] Request received. API Key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'MISSING'}`);
+        if (!apiKey) {
+            console.warn('[MgmtConfig] Rejecting request: API key required');
             return res.status(400).json({ error: 'API key required' });
+        }
         const cached = (0, license_cache_1.getLicenseFromCache)(apiKey);
+        const today = new Date().toISOString().split('T')[0];
         if (cached) {
-            const today = new Date().toISOString().split('T')[0];
+            console.log(`[MgmtConfig] Serving from cache for client: ${cached.name}. allowRateCardFetch: ${!!cached.allowRateCardFetch}`);
             const isExpired = cached.contractEnd && cached.contractEnd < today;
             const isActive = cached.status === 'active' && !isExpired;
             if (!isActive) {
@@ -690,14 +673,18 @@ exports.mgmtRouter.get('/clients/config', async (req, res) => {
                 clientId: cached.clientUuid,
                 clientName: cached.name,
                 shortCode: cached.shortCode || cached.name.substring(0, 3).toUpperCase(),
+                moduleRates: cached.allowRateCardFetch ? cached.moduleRates : null,
+                allowRateCardFetch: !!cached.allowRateCardFetch,
                 _cached: true
             });
         }
         const db = (0, sqlite_1.getDatabase)();
         const client = db.prepare('SELECT * FROM clients WHERE api_key = ?').get(apiKey);
-        if (!client)
+        if (!client) {
+            console.warn(`[MgmtConfig] Client not found for key: ${apiKey.substring(0, 10)}...`);
             return res.status(404).json({ valid: false, error: 'Client not found' });
-        const today = new Date().toISOString().split('T')[0];
+        }
+        console.log(`[MgmtConfig] Found in DB: ${client.name}. allow_rate_card_fetch: ${client.allow_rate_card_fetch}`);
         const isExpired = client.contract_end && client.contract_end < today;
         const isActive = client.status === 'active' && !isExpired;
         if (!isActive) {
@@ -716,7 +703,9 @@ exports.mgmtRouter.get('/clients/config', async (req, res) => {
             shortCode: client.short_code || client.name.substring(0, 3).toUpperCase(),
             billingType: client.billing_type || 'PER_REQUEST',
             credits: client.credits || 0,
-            timezone: client.timezone || 'UTC'
+            timezone: client.timezone || 'UTC',
+            moduleRates: client.allow_rate_card_fetch ? (typeof client.module_rates === 'string' ? JSON.parse(client.module_rates) : client.module_rates) : null,
+            allowRateCardFetch: !!client.allow_rate_card_fetch
         });
     }
     catch (err) {
@@ -761,9 +750,9 @@ exports.mgmtRouter.get('/clients/credentials', async (req, res) => {
             const genericProvider = genericProviderLabels[provider] || provider;
             sanitizedProviderLabels[genericProvider] = label;
         });
-        // Parse module_rates from client
+        // Parse module_rates from client (only if fetching is allowed)
         let moduleRates = {};
-        if (client.module_rates) {
+        if (client.module_rates && client.allow_rate_card_fetch) {
             try {
                 moduleRates = typeof client.module_rates === 'string' ? JSON.parse(client.module_rates) : client.module_rates;
             }
@@ -1520,8 +1509,8 @@ exports.mgmtRouter.get('/ai-queue', requireAdminAuth, async (req, res) => {
         const { status, clientId, limit } = req.query;
         const db = (0, sqlite_1.getDatabase)();
         let sql = `SELECT 
-            j.id, j.client_id, j.status, j.sub_status, j.modules_requested, j.total_cost_usd, j.provider_cost_usd,
-            j.error_message, j.local_job_id, j.user_id,
+            j.id, j.client_id, j.status, j.queue_status, j.priority, j.sub_status, j.modules_requested, j.total_cost_usd, j.provider_cost_usd,
+            j.error_message, j.local_job_id, j.user_id, j.audio_path, j.result_data,
             j.created_at, j.updated_at,
             c.name as client_name
         FROM ai_jobs j
@@ -1536,7 +1525,12 @@ exports.mgmtRouter.get('/ai-queue', requireAdminAuth, async (req, res) => {
             sql += ' AND j.client_id = ?';
             params.push(clientId);
         }
-        sql += ' ORDER BY j.created_at DESC';
+        if (status === 'pending') {
+            sql += ' ORDER BY j.priority DESC, j.created_at ASC';
+        }
+        else {
+            sql += ' ORDER BY j.created_at DESC';
+        }
         if (limit) {
             sql += ' LIMIT ?';
             params.push(parseInt(String(limit)));
@@ -1556,6 +1550,36 @@ exports.mgmtRouter.delete('/ai-queue/:id', requireAdminAuth, async (req, res) =>
         const { id } = req.params;
         const db = (0, sqlite_1.getDatabase)();
         db.prepare('DELETE FROM ai_jobs WHERE id = ?').run(id);
+        res.json({ success: true });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+// Change Priority
+exports.mgmtRouter.post('/ai-queue/:id/priority', requireAdminAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { priority } = req.body;
+        const db = (0, sqlite_1.getDatabase)();
+        db.prepare('UPDATE ai_jobs SET priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(priority || 0, id);
+        res.json({ success: true });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+// Free Resource (Abort Processing)
+exports.mgmtRouter.post('/ai-queue/:id/free', requireAdminAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { abortJob } = await Promise.resolve().then(() => __importStar(require('../ai-queue')));
+        const db = (0, sqlite_1.getDatabase)();
+        // Mark as failed in DB
+        db.prepare(`UPDATE ai_jobs SET queue_status = 'failed', status = 'error', error_message = 'Job manually aborted to free resources', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+        // Attempt to kill running process
+        abortJob(id);
+        logger_1.logger.warn('AI', 'JOB_RESOURCE_FREED', `Job ${id} forcefully aborted by support staff`);
         res.json({ success: true });
     }
     catch (err) {

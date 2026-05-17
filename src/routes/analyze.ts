@@ -453,12 +453,18 @@ analyzeRouter.post('/analyze', licenseMiddleware, async (req: LicensedRequest, r
         });
 
     } catch (error: any) {
+        let statusCode = 500;
+        const statusMatch = error.message?.match(/\b(400|401|403|429|500|503)\b/);
+        if (statusMatch) {
+            statusCode = parseInt(statusMatch[1]);
+        }
+
         logAIRequest({
             clientId: clientId!,
             endpoint: '/api/ai/analyze',
             direction: 'outgoing',
             errorMessage: error.message,
-            responseStatus: 500,
+            responseStatus: statusCode,
             latencyMs: Date.now() - startTime,
             ipAddress: req.ip,
             userAgent: req.get('User-Agent')
@@ -613,12 +619,18 @@ analyzeRouter.post('/module/:moduleName', licenseMiddleware, async (req: License
 
     } catch (error: any) {
         // Log error consistently
+        let statusCode = 500;
+        const statusMatch = error.message?.match(/\b(400|401|403|429|500|503)\b/);
+        if (statusMatch) {
+            statusCode = parseInt(statusMatch[1]);
+        }
+
         logAIRequest({
             clientId: clientId!,
             endpoint: `/api/ai/module/${moduleName}`,
             direction: 'outgoing',
             errorMessage: error.message,
-            responseStatus: 500,
+            responseStatus: statusCode,
             latencyMs: Date.now() - startTime,
             ipAddress: req.ip,
             userAgent: req.get('User-Agent')

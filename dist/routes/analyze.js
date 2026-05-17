@@ -276,7 +276,7 @@ function logAIRequest(params) {
 }
 /// Unified analysis endpoint for all AI modules
 exports.analyzeRouter.post('/analyze', license_1.licenseMiddleware, async (req, res) => {
-    var _a;
+    var _a, _b;
     const startTime = Date.now();
     const clientId = (_a = req.client) === null || _a === void 0 ? void 0 : _a.id;
     try {
@@ -397,12 +397,17 @@ exports.analyzeRouter.post('/analyze', license_1.licenseMiddleware, async (req, 
         });
     }
     catch (error) {
+        let statusCode = 500;
+        const statusMatch = (_b = error.message) === null || _b === void 0 ? void 0 : _b.match(/\b(400|401|403|429|500|503)\b/);
+        if (statusMatch) {
+            statusCode = parseInt(statusMatch[1]);
+        }
         logAIRequest({
             clientId: clientId,
             endpoint: '/api/ai/analyze',
             direction: 'outgoing',
             errorMessage: error.message,
-            responseStatus: 500,
+            responseStatus: statusCode,
             latencyMs: Date.now() - startTime,
             ipAddress: req.ip,
             userAgent: req.get('User-Agent')
@@ -413,7 +418,7 @@ exports.analyzeRouter.post('/analyze', license_1.licenseMiddleware, async (req, 
 });
 // Module-specific endpoint for cleaner URLs
 exports.analyzeRouter.post('/module/:moduleName', license_1.licenseMiddleware, async (req, res) => {
-    var _a;
+    var _a, _b;
     const startTime = Date.now();
     const clientId = (_a = req.client) === null || _a === void 0 ? void 0 : _a.id;
     const moduleName = req.params.moduleName;
@@ -469,6 +474,9 @@ exports.analyzeRouter.post('/module/:moduleName', license_1.licenseMiddleware, a
             });
         }
         // ---------------------------
+        // Build structured prompt parts for this module
+        // Build messages with proper role separation
+        // (Already declared above)
         const aiClient = new openrouter_1.OpenRouterClient({ apiKey });
         const result = await aiClient.completeWithRetry({
             messages: [
@@ -511,7 +519,8 @@ exports.analyzeRouter.post('/module/:moduleName', license_1.licenseMiddleware, a
             actualCostUsd: result.cost || 0, // The raw provider cost
             tokensUsed: usage.totalTokens || (usage.promptTokens + usage.completionTokens) || 0,
             latencyMs: Date.now() - startTime,
-            requestId: requestId
+            requestId: requestId,
+            durationSeconds: duration
         });
         // --- CREDIT SYSTEM DEDUCTION ---
         let lowCreditWarning = null;
@@ -533,12 +542,17 @@ exports.analyzeRouter.post('/module/:moduleName', license_1.licenseMiddleware, a
     }
     catch (error) {
         // Log error consistently
+        let statusCode = 500;
+        const statusMatch = (_b = error.message) === null || _b === void 0 ? void 0 : _b.match(/\b(400|401|403|429|500|503)\b/);
+        if (statusMatch) {
+            statusCode = parseInt(statusMatch[1]);
+        }
         logAIRequest({
             clientId: clientId,
             endpoint: `/api/ai/module/${moduleName}`,
             direction: 'outgoing',
             errorMessage: error.message,
-            responseStatus: 500,
+            responseStatus: statusCode,
             latencyMs: Date.now() - startTime,
             ipAddress: req.ip,
             userAgent: req.get('User-Agent')

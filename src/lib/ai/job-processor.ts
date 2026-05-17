@@ -12,7 +12,7 @@ import { buildPromptParts } from '../../routes/analyze';
 import { logger } from '../../logger';
 
 // Job Processor logic
-export async function processAiJob(jobId: string, audioPath: string, modulesRequested: string[], clientId: number, clientName: string, durationRequested: number | null = null, targetLanguages?: string[]) {
+export async function processAiJob(jobId: string, audioPath: string, modulesRequested: string[], clientId: number, clientName: string, durationRequested: number | null = null, targetLanguages?: string[], abortSignal?: AbortSignal) {
     const db = getDatabase();
     let totalCost = 0;
     let billedTotalCost = 0;
@@ -73,6 +73,7 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
 
         // Helper to update job status
         const updateSubStatus = (status: string) => {
+            if (abortSignal?.aborted) throw new Error('AbortError');
             db.prepare('UPDATE ai_jobs SET sub_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, jobId);
             logger.info('AI', 'JOB_STATUS_UPDATE', `Job ${jobId}: ${status}`);
         };
@@ -109,33 +110,54 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
             });
 
             const startTimeTranscription = Date.now();
-            transcriptionResult = await transcriber.transcribeWithRetry(audioPath);
-            const processingTimeTranscription = Date.now() - startTimeTranscription;
+            let processingTimeTranscription = 0;
+            let actualTranscriptionCost = 0;
+            try {
+                transcriptionResult = await transcriber.transcribeWithRetry(audioPath);
+                processingTimeTranscription = Date.now() - startTimeTranscription;
 
-            const actualTranscriptionCost = transcriptionResult.cost || 0;
-            billedTotalCost += billablePriceTranscription;
+                actualTranscriptionCost = transcriptionResult.cost || 0;
+                billedTotalCost += billablePriceTranscription;
 
-            logger.ai('AI_TRANSCRIPTION_RESPONSE', `Job ${jobId} transcription complete`, {
-                clientId,
-                jobId,
-                details: {
-                    model: whisperModel,
-                    latencyMs: processingTimeTranscription,
-                    actualCost: actualTranscriptionCost,
-                    billedToClient: billablePriceTranscription,
-                    textSample: transcriptionResult.text?.substring(0, 500) + '...'
+                logger.ai('AI_TRANSCRIPTION_RESPONSE', `Job ${jobId} transcription complete`, {
+                    clientId,
+                    jobId,
+                    details: {
+                        model: whisperModel,
+                        latencyMs: processingTimeTranscription,
+                        actualCost: actualTranscriptionCost,
+                        billedToClient: billablePriceTranscription,
+                        textSample: transcriptionResult.text?.substring(0, 500) + '...'
+                    }
+                });
+
+                logApiRequest({
+                    clientId, provider: 'whisper', endpoint: 'openai.audio.transcriptions', model: whisperModel, direction: 'outgoing',
+                    responseStatus: 200, costUsd: actualTranscriptionCost, latencyMs: processingTimeTranscription,
+                    tokensUsed: Math.ceil((transcriptionResult.duration || 0) / 60 * 150),
+                    billedCost: billablePriceTranscription,
+                    parentJobId: jobId, requestId: 'whisper-' + Date.now(),
+                    requestBody: { audioPath },
+                    responseBody: { text: transcriptionResult.text?.substring(0, 50000) }
+                });
+            } catch (transcribeErr: any) {
+                const processingTimeTranscription = Date.now() - startTimeTranscription;
+                let statusCode = 500;
+                const statusMatch = transcribeErr.message?.match(/\b(400|401|403|429|500|503)\b/);
+                if (statusMatch) {
+                    statusCode = parseInt(statusMatch[1]);
                 }
-            });
 
-            logApiRequest({
-                clientId, provider: 'whisper', endpoint: 'openai.audio.transcriptions', model: whisperModel, direction: 'outgoing',
-                responseStatus: 200, costUsd: actualTranscriptionCost, latencyMs: processingTimeTranscription,
-                tokensUsed: Math.ceil((transcriptionResult.duration || 0) / 60 * 150),
-                billedCost: billablePriceTranscription,
-                parentJobId: jobId, requestId: 'whisper-' + Date.now(),
-                requestBody: { audioPath },
-                responseBody: { text: transcriptionResult.text?.substring(0, 50000) }
-            });
+                logApiRequest({
+                    clientId, provider: 'whisper', endpoint: 'openai.audio.transcriptions', model: whisperModel, direction: 'outgoing',
+                    responseStatus: statusCode, costUsd: 0, latencyMs: processingTimeTranscription,
+                    tokensUsed: 0, billedCost: 0, parentJobId: jobId, requestId: 'whisper-' + Date.now(),
+                    requestBody: { audioPath },
+                    responseBody: { error: transcribeErr.message },
+                    errorMessage: transcribeErr.message
+                });
+                throw transcribeErr;
+            }
 
             await logClientUsage({
                 clientId, 
@@ -353,8 +375,10 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                     const transcriptSegments = transcriptionModule?.result_data?.segments || transcriptionModule?.resultData?.segments || transcriptionResult?.segments || [];
                     const transcriptText = transcriptionResult?.text || '';
 
-                    // Helper for a single AI request (Defining inside the loop to capture closure vars easily, but can be moved out)
+                    // Helper for a single AI request
                     const callAI = async (mName: string, transcript: string, params: Record<string, any> = {}) => {
+                        if (abortSignal?.aborted) throw new Error('AbortError');
+                        
                         // Fetch verified examples for this module (Learning Loop)
                         const examples = await getClientAIExamples(clientId, mName);
                         
@@ -365,77 +389,94 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                         });
                         
                         const startTime = Date.now();
-                        const result = await orClient.completeWithRetry({
-                            messages: [{ role: 'system' as const, content: system }, { role: 'user' as const, content: user }],
-                            model: model!, temperature: 0.7, maxTokens: 8192
-                        });
-                        const latency = Date.now() - startTime;
-                        const usage = result.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-                        const tokens = (usage.promptTokens || 0) + (usage.completionTokens || 0);
-
-                        // Track billing on first request for visibility in Audit Logs (Child Card)
-                        const billedCostForLog = params._isFirstCall ? params._billablePrice : 0;
-
-                        logApiRequest({
-                            clientId, provider: 'openrouter', endpoint: `/api/ai/job/${mName}`, model: model!, direction: 'outgoing',
-                            responseStatus: 200, costUsd: result.cost || 0, latencyMs: latency, tokensUsed: tokens, requestId: result.id, parentJobId: jobId,
-                            billedCost: Number(billedCostForLog) || 0,
-                            requestBody: { system, user }, responseBody: { content: result.content?.substring(0, 50000) }
-                        });
-
-                        // Robust parsing for AI responses that might include markdown blocks or hallucinated trailing text
-                        let parsed: any;
-                        const content = result.content?.trim() || '';
                         try {
-                            parsed = JSON.parse(content);
-                        } catch {
-                            try {
-                                // Try extracting from markdown blocks first
-                                const match = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-                                let jsonFragment = match ? match[1].trim() : content;
-                                
-                                try {
-                                    parsed = JSON.parse(jsonFragment);
-                                } catch (innerErr) {
-                                    // REPAIR ATTEMPT: If it's a translation chunk, try to salvage partial segments
-                                    if (mName.startsWith('subtitle_translation')) {
-                                        logger.ai('AI_JSON_REPAIR_TRIGGERED', `Attempting to salvage truncated JSON for ${mName}`);
-                                        const lastBrace = jsonFragment.lastIndexOf('}');
-                                        if (lastBrace !== -1) {
-                                            // Look for the last complete object in the segments array
-                                            const salvaged = jsonFragment.substring(0, lastBrace + 1) + ']}';
-                                            try {
-                                                parsed = JSON.parse(salvaged);
-                                                logger.info('AI', 'JSON_REPAIRED', `Successfully salvaged segments from truncated response`);
-                                            } catch (e) {
-                                                // If that failed, maybe it's just a raw array
-                                                try {
-                                                    parsed = JSON.parse(jsonFragment.substring(0, lastBrace + 1) + ']');
-                                                } catch (e2) {}
-                                            }
-                                        }
-                                    }
+                            const result = await orClient.completeWithRetry({
+                                messages: [{ role: 'system' as const, content: system }, { role: 'user' as const, content: user }],
+                                model: model!, temperature: 0.7, maxTokens: 8192
+                            });
+                            const latency = Date.now() - startTime;
+                            const usage = result.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+                            const tokens = (usage.promptTokens || 0) + (usage.completionTokens || 0);
 
-                                    if (!parsed) {
-                                        // Try finding the largest JSON object or array structure
-                                        const startBracket = content.indexOf('[');
-                                        const startBrace = content.indexOf('{');
-                                        let start = (startBracket !== -1 && startBrace !== -1) ? Math.min(startBracket, startBrace) : (startBracket !== -1 ? startBracket : startBrace);
-                                        
-                                        if (start !== -1) {
-                                            const end = content.lastIndexOf(content[start] === '[' ? ']' : '}');
-                                            if (end > start) {
-                                                jsonFragment = content.substring(start, end + 1).trim();
-                                                parsed = JSON.parse(jsonFragment);
+                            // Track billing on first request for visibility in Audit Logs (Child Card)
+                            const billedCostForLog = params._isFirstCall ? params._billablePrice : 0;
+
+                            logApiRequest({
+                                clientId, provider: 'openrouter', endpoint: `/api/ai/job/${mName}`, model: model!, direction: 'outgoing',
+                                responseStatus: 200, costUsd: result.cost || 0, latencyMs: latency, tokensUsed: tokens, requestId: result.id, parentJobId: jobId,
+                                billedCost: Number(billedCostForLog) || 0,
+                                requestBody: { system, user }, responseBody: { content: result.content?.substring(0, 50000) }
+                            });
+
+                            // Robust parsing for AI responses that might include markdown blocks or hallucinated trailing text
+                            let parsed: any;
+                            const content = result.content?.trim() || '';
+                            try {
+                                parsed = JSON.parse(content);
+                            } catch {
+                                try {
+                                    // Try extracting from markdown blocks first
+                                    const match = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+                                    let jsonFragment = match ? match[1].trim() : content;
+                                    
+                                    try {
+                                        parsed = JSON.parse(jsonFragment);
+                                    } catch (innerErr) {
+                                        // REPAIR ATTEMPT: If it's a translation chunk, try to salvage partial segments
+                                        if (mName.startsWith('subtitle_translation')) {
+                                            logger.ai('AI_JSON_REPAIR_TRIGGERED', `Attempting to salvage truncated JSON for ${mName}`);
+                                            const lastBrace = jsonFragment.lastIndexOf('}');
+                                            if (lastBrace !== -1) {
+                                                // Look for the last complete object in the segments array
+                                                const salvaged = jsonFragment.substring(0, lastBrace + 1) + ']}';
+                                                try {
+                                                    parsed = JSON.parse(salvaged);
+                                                    logger.info('AI', 'JSON_REPAIRED', `Successfully salvaged segments from truncated response`);
+                                                } catch (e) {
+                                                    // If that failed, maybe it's just a raw array
+                                                    try {
+                                                        parsed = JSON.parse(jsonFragment.substring(0, lastBrace + 1) + ']');
+                                                    } catch (e2) {}
+                                                }
+                                            }
+                                        }
+
+                                        if (!parsed) {
+                                            // Try finding the largest JSON object or array structure
+                                            const startBracket = content.indexOf('[');
+                                            const startBrace = content.indexOf('{');
+                                            let start = (startBracket !== -1 && startBrace !== -1) ? Math.min(startBracket, startBrace) : (startBracket !== -1 ? startBracket : startBrace);
+                                            
+                                            if (start !== -1) {
+                                                const end = content.lastIndexOf(content[start] === '[' ? ']' : '}');
+                                                if (end > start) {
+                                                    jsonFragment = content.substring(start, end + 1).trim();
+                                                    parsed = JSON.parse(jsonFragment);
+                                                }
                                             }
                                         }
                                     }
+                                } catch (e) {
+                                    logger.warn('AI', 'PARSE_RECOVERY_FAILED', `Failed to recover JSON from response: ${e.message}`);
                                 }
-                            } catch (e) {
-                                logger.warn('AI', 'PARSE_RECOVERY_FAILED', `Failed to recover JSON from response: ${e.message}`);
                             }
+                            return { data: parsed || { raw: content }, cost: result.cost || 0, tokens, latency };
+                        } catch (err: any) {
+                            const latency = Date.now() - startTime;
+                            let statusCode = 500;
+                            const statusMatch = err.message?.match(/\b(400|401|403|429|500|503)\b/);
+                            if (statusMatch) {
+                                statusCode = parseInt(statusMatch[1]);
+                            }
+
+                            logApiRequest({
+                                clientId, provider: 'openrouter', endpoint: `/api/ai/job/${mName}`, model: model!, direction: 'outgoing',
+                                responseStatus: statusCode, costUsd: 0, latencyMs: latency, tokensUsed: 0, parentJobId: jobId,
+                                requestBody: { system, user }, responseBody: { error: err.message },
+                                errorMessage: err.message
+                            });
+                            throw err;
                         }
-                        return { data: parsed || { raw: content }, cost: result.cost || 0, tokens, latency };
                     };
 
                     // Special handling for Subtitle Translation (supports multiple languages)

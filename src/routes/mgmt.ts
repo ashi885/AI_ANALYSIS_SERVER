@@ -51,98 +51,6 @@ function decrypt(text: string): string {
 }
 
 export const mgmtRouter = Router();
-export { requireAdminAuth };
-
-// Balance alerts for dashboard notification
-mgmtRouter.get('/status/balance-alerts', async (req: Request, res: Response) => {
-    try {
-        const db = getDatabase();
-        // Check for specific client (if API key used) or all (if admin)
-        let clientId: number | null = null;
-
-        // 1. Check for X-Client-API-Key 
-        const apiKey = req.header('X-Client-API-Key') || req.query.apiKey as string;
-        if (apiKey) {
-            const client = db.prepare('SELECT id FROM clients WHERE api_key = ?').get(apiKey) as any;
-            if (client) clientId = client.id;
-        }
-
-        // 2. Check for session (admin or user dashboard)
-        const sessionCookie = req.cookies?.cuepoint_session;
-        if (!clientId && sessionCookie) {
-             const session = typeof sessionCookie === 'string' ? JSON.parse(sessionCookie) : sessionCookie;
-             if (session.clientId) clientId = session.clientId;
-             // If they are ADMIN and no specific clientId requested, return all warnings?
-             // No, usually the dashboard is client-contextual.
-        }
-
-        if (!clientId && !(req as any).adminUser) {
-             return res.json({ alerts: [] });
-        }
-
-        let sql = `
-            SELECT id, name, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold 
-            FROM clients 
-            WHERE status = 'active'
-        `;
-        const params: any[] = [];
-        if (clientId) {
-            sql += ' AND id = ?';
-            params.push(clientId);
-        }
-
-        const clients = db.prepare(sql).all(...params) as any[];
-        const alerts: any[] = [];
-
-        for (const client of clients) {
-            const threshold = client.provider_warn_threshold || 25.0;
-            
-            // Assume "initial" or "normal" top-up is a decent amount, e.g. $10 or $20.
-            // If balance is < threshold % of something... 
-            // Better: If balance is absolute low or % of 'recharge amount' 
-            // since we don't track 'total cumulative top-ups' easily, we use a simple logic:
-            // If balance is below $1 or below something... 
-            // Actually, let's just use the USER'S suggestion: "when the amount is around 25 % left"
-            // We need a 'total top-up' field? No, lets suggest a hard floor or just use the field as 'alert when below this value'.
-            // Actually, the user says "around 25% left", which implies we know the total.
-            // Let's add 'total_openai_recharge' or similar? 
-            // Logic: Warn if balance is low. 
-            // We use a safe floor of $2.50 or the configured threshold if available.
-            const openaiBal = client.provider_bal_openai || 0;
-            const routerBal = client.provider_bal_openrouter || 0;
-            
-            // Check OpenAI/Whisper
-            if (openaiBal <= threshold) {
-                alerts.push({
-                    clientId: client.id,
-                    clientName: client.name,
-                    provider: 'OpenAI',
-                    isExhausted: openaiBal <= 0,
-                    message: apiKey 
-                        ? (openaiBal <= 0 ? 'Service Suspended: Provider balance exhausted. Please contact support.' : `Your transcription service balance is low. Please contact support.`)
-                        : `Low OpenAI balance for ${client.name} ($${openaiBal.toFixed(2)}).`
-                });
-            }
-            
-            // Check OpenRouter (Claude/Gemini)
-            if (routerBal <= threshold) {
-                alerts.push({
-                    clientId: client.id,
-                    clientName: client.name,
-                    provider: 'OpenRouter',
-                    isExhausted: routerBal <= 0,
-                    message: apiKey 
-                        ? (routerBal <= 0 ? 'Service Suspended: AI analysis balance exhausted. Please contact support.' : `Your AI analysis service balance is low. Please contact support.`)
-                        : `Low OpenRouter balance for ${client.name} ($${routerBal.toFixed(2)}).`
-                });
-            }
-        }
-
-        res.json({ alerts });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
-    }
-});
 
 // Auth middleware for mgmt routes - Supports Admin session OR Client API Key
 const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
@@ -200,6 +108,64 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
 
 // Aliases for readability if needed
 const requireAdminAuth = requireAuth;
+export { requireAdminAuth };
+
+// Balance alerts for dashboard notification - staff only
+mgmtRouter.get('/status/balance-alerts', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        // Ensure only admin/staff can access this
+        if (!(req as any).adminUser) {
+            return res.status(403).json({ error: 'Access denied: Staff only' });
+        }
+
+        const db = getDatabase();
+        const clients = db.prepare(`
+            SELECT id, name, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold 
+            FROM clients 
+            WHERE status = 'active'
+        `).all() as any[];
+
+        const alerts: any[] = [];
+
+        for (const client of clients) {
+            const threshold = client.provider_warn_threshold || 25.0;
+            const openaiBal = client.provider_bal_openai || 0;
+            const routerBal = client.provider_bal_openrouter || 0;
+            
+            // Check OpenAI/Whisper
+            if (openaiBal <= threshold) {
+                alerts.push({
+                    clientId: client.id,
+                    clientName: client.name,
+                    client_name: client.name,
+                    provider: 'OpenAI',
+                    balance: openaiBal,
+                    isExhausted: openaiBal <= 0,
+                    message: `Low OpenAI balance for ${client.name} ($${openaiBal.toFixed(2)}).`
+                });
+            }
+            
+            // Check OpenRouter (Claude/Gemini)
+            if (routerBal <= threshold) {
+                alerts.push({
+                    clientId: client.id,
+                    clientName: client.name,
+                    client_name: client.name,
+                    provider: 'OpenRouter',
+                    balance: routerBal,
+                    isExhausted: routerBal <= 0,
+                    message: `Low OpenRouter balance for ${client.name} ($${routerBal.toFixed(2)}).`
+                });
+            }
+        }
+
+        res.json(alerts);
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
 
 // Login endpoint
 mgmtRouter.post('/auth/login', async (req: Request, res: Response) => {
@@ -1728,8 +1694,8 @@ mgmtRouter.get('/ai-queue', requireAdminAuth, async (req: Request, res: Response
         
         const db = getDatabase();
         let sql = `SELECT 
-            j.id, j.client_id, j.status, j.sub_status, j.modules_requested, j.total_cost_usd, j.provider_cost_usd,
-            j.error_message, j.local_job_id, j.user_id,
+            j.id, j.client_id, j.status, j.queue_status, j.priority, j.sub_status, j.modules_requested, j.total_cost_usd, j.provider_cost_usd,
+            j.error_message, j.local_job_id, j.user_id, j.audio_path, j.result_data,
             j.created_at, j.updated_at,
             c.name as client_name
         FROM ai_jobs j
@@ -1747,7 +1713,11 @@ mgmtRouter.get('/ai-queue', requireAdminAuth, async (req: Request, res: Response
             params.push(clientId);
         }
 
-        sql += ' ORDER BY j.created_at DESC';
+        if (status === 'pending') {
+            sql += ' ORDER BY j.priority DESC, j.created_at ASC';
+        } else {
+            sql += ' ORDER BY j.created_at DESC';
+        }
 
         if (limit) {
             sql += ' LIMIT ?';
@@ -1774,6 +1744,40 @@ mgmtRouter.delete('/ai-queue/:id', requireAdminAuth, async (req: Request, res: R
         res.status(500).json({ error: err.message });
     }
 });
+
+// Change Priority
+mgmtRouter.post('/ai-queue/:id/priority', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { priority } = req.body;
+        const db = getDatabase();
+        db.prepare('UPDATE ai_jobs SET priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(priority || 0, id);
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Free Resource (Abort Processing)
+mgmtRouter.post('/ai-queue/:id/free', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { abortJob } = await import('../ai-queue');
+        const db = getDatabase();
+        
+        // Mark as failed in DB
+        db.prepare(`UPDATE ai_jobs SET queue_status = 'failed', status = 'error', error_message = 'Job manually aborted to free resources', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+        
+        // Attempt to kill running process
+        abortJob(id as string);
+        
+        logger.warn('AI', 'JOB_RESOURCE_FREED', `Job ${id} forcefully aborted by support staff`);
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 
 // Retry a failed or partial ai_job (Enhanced for surgical retries)
 mgmtRouter.post('/ai-queue/:id/retry', requireAuth, async (req: Request, res: Response) => {
