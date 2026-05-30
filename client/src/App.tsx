@@ -248,7 +248,7 @@ function App() {
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [authLoading, setAuthLoading] = useState(true);
     const [loginError, setLoginError] = useState('');
-    const [loginEmail, setLoginEmail] = useState('');
+    const [loginUsername, setLoginUsername] = useState('');
     const [loginPassword, setLoginPassword] = useState('');
     const [savingClient, setSavingClient] = useState(false);
 
@@ -361,10 +361,10 @@ function App() {
             const res = await fetch('/api/mgmt/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: loginEmail, password: loginPassword })
+                body: JSON.stringify({ username: loginUsername, password: loginPassword })
             });
             if (res.ok) {
-                localStorage.setItem('cuepoint_admin_auth', btoa(`${loginEmail}:${loginPassword}`));
+                localStorage.setItem('cuepoint_admin_auth', btoa(`${loginUsername}:${loginPassword}`));
                 setIsAuthenticated(true);
             } else setLoginError('Invalid credentials');
         } catch { setLoginError('Login failed'); }
@@ -1738,7 +1738,6 @@ function ClientsView({ clients, loading, statusFilter, setStatusFilter, searchQu
         </div>
     );
 }
-
 function BillingView({ clients, getStatus, selectedBillingClient, setSelectedBillingClient, billingData }: {
     clients: Client[];
     getStatus: (c: Client) => string;
@@ -1748,6 +1747,73 @@ function BillingView({ clients, getStatus, selectedBillingClient, setSelectedBil
 }) {
     const activeClients = clients.filter(c => getStatus(c) === 'active');
     const selectedClientStats = billingData?.clientSummaries?.find((s: any) => s.id === selectedBillingClient);
+
+    const exportCSV = () => {
+        const headers = ['Client Name', 'Shortcode', 'Plan', 'Billing Type', 'Credits ($)', 'Setup Fee ($)', 'Jobs (Month)', 'Revenue (Month)', 'Status'];
+        const rows = clients.map(client => {
+            const clientSummary = billingData?.clientSummaries?.find((s: any) => s.id === client.id);
+            return [
+                `"${client.description || client.name}"`,
+                client.name,
+                client.plan,
+                client.billing_type || 'PER_REQUEST',
+                (client.credits || 0).toFixed(2),
+                (client.setup_fee || 0).toFixed(2),
+                clientSummary?.jobs_this_month || 0,
+                (clientSummary?.revenue_this_month || 0).toFixed(2),
+                getStatus(client)
+            ];
+        });
+
+        const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", `billing-report-${new Date().toISOString().split('T')[0]}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    const exportExcel = () => {
+        const headers = ['Client Name', 'Shortcode', 'Plan', 'Billing Type', 'Credits ($)', 'Setup Fee ($)', 'Jobs (Month)', 'Revenue (Month)', 'Status'];
+        const rows = clients.map(client => {
+            const clientSummary = billingData?.clientSummaries?.find((s: any) => s.id === client.id);
+            return [
+                client.description || client.name,
+                client.name,
+                client.plan,
+                client.billing_type || 'PER_REQUEST',
+                (client.credits || 0).toFixed(2),
+                (client.setup_fee || 0).toFixed(2),
+                clientSummary?.jobs_this_month || 0,
+                (clientSummary?.revenue_this_month || 0).toFixed(2),
+                getStatus(client)
+            ];
+        });
+
+        let xml = `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n xmlns:o="urn:schemas-microsoft-com:office:office"\n xmlns:x="urn:schemas-microsoft-com:office:excel"\n xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"\n xmlns:html="http://www.w3.org/TR/REC-html40">\n <Worksheet ss:Name="Billing Report">\n  <Table>\n   <Row ss:Index="1">`;
+        headers.forEach(h => {
+            xml += `\n    <Cell><Data ss:Type="String">${h}</Data></Cell>`;
+        });
+        xml += '\n   </Row>';
+        rows.forEach(r => {
+            xml += '\n   <Row>';
+            r.forEach(val => {
+                const type = typeof val === 'number' || (!isNaN(Number(val)) && val !== '') ? 'Number' : 'String';
+                xml += `\n    <Cell><Data ss:Type="${type}">${val}</Data></Cell>`;
+            });
+            xml += '\n   </Row>';
+        });
+        xml += `\n  </Table>\n </Worksheet>\n</Workbook>`;
+
+        const link = document.createElement("a");
+        link.setAttribute("href", 'data:application/vnd.ms-excel;charset=utf-8,' + encodeURIComponent(xml));
+        link.setAttribute("download", `billing-report-${new Date().toISOString().split('T')[0]}.xls`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
 
     return (
         <div>
@@ -1770,7 +1836,14 @@ function BillingView({ clients, getStatus, selectedBillingClient, setSelectedBil
                 </div>
             </div>
             <div style={styles.card}>
-                <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '20px' }}>Client Billing</h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h3 style={{ fontSize: '16px', fontWeight: 600, margin: 0 }}>Client Billing</h3>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        <button onClick={exportCSV} style={{ ...styles.buttonSecondary, padding: '6px 12px', fontSize: '12px' }}>📥 Export CSV</button>
+                        <button onClick={exportExcel} style={{ ...styles.buttonSecondary, padding: '6px 12px', fontSize: '12px' }}>📊 Export Excel</button>
+                        <button onClick={() => window.print()} style={{ ...styles.buttonSecondary, padding: '6px 12px', fontSize: '12px' }}>🖨️ Print PDF</button>
+                    </div>
+                </div>
                 <table style={styles.table}>
                     <thead>
                         <tr>
@@ -1787,12 +1860,26 @@ function BillingView({ clients, getStatus, selectedBillingClient, setSelectedBil
                             const rates = client.module_rates as any;
                             const clientSummary = billingData?.clientSummaries?.find((s: any) => s.id === client.id);
                             
+                            const formatRate = (moduleRate: any, defaultVal: string) => {
+                                if (!moduleRate) return `$${defaultVal}`;
+                                if (typeof moduleRate === 'object') {
+                                    if (moduleRate.pricing_type === 'per_minute') {
+                                        return `$${Number(moduleRate.cost_per_minute).toFixed(3)}/m`;
+                                    }
+                                    if (moduleRate.pricing_type === 'tiered') {
+                                        return 'Tiered';
+                                    }
+                                    return `$${Number(moduleRate.cost_per_job ?? defaultVal).toFixed(3)}`;
+                                }
+                                return `$${Number(moduleRate).toFixed(3)}`;
+                            };
+                            
                             const rateText = [
-                                `Trans: $${rates?.transcription?.cost_per_job?.toFixed(3) || '0.006'}`,
-                                `Sub: $${rates?.subtitles?.cost_per_job?.toFixed(3) || '0.015'}`,
-                                `Meta: $${rates?.metadata?.cost_per_job?.toFixed(3) || '0.015'}`,
-                                `Ad: $${rates?.ad_breaks?.cost_per_job?.toFixed(3) || '0.025'}`,
-                                `Promo: $${rates?.promo_breaks?.cost_per_job?.toFixed(3) || '0.025'}`,
+                                `Trans: ${formatRate(rates?.transcription, '0.006')}`,
+                                `Sub: ${formatRate(rates?.subtitles, '0.015')}`,
+                                `Meta: ${formatRate(rates?.metadata, '0.015')}`,
+                                `Ad: ${formatRate(rates?.ad_breaks, '0.025')}`,
+                                `Promo: ${formatRate(rates?.promo_breaks, '0.025')}`,
                             ].join(' | ');
                             
                             return (
@@ -2185,8 +2272,24 @@ function TieredValueEditor({ label, value, onChange, defaultValue }: { label: st
 }
 
 function TieredPricingCard({ title, value, onChange }: { title: string, value: any, onChange: (val: any) => void }) {
-    const [isTiered, setIsTiered] = useState(value?.pricing_type === 'tiered');
+    const pricingType = value?.pricing_type || (value?.tiers ? 'tiered' : 'flat');
     
+    const handleTypeChange = (type: 'flat' | 'tiered' | 'per_minute') => {
+        if (type === 'flat') {
+            onChange({ cost_per_job: typeof value === 'object' ? (value.cost_per_job ?? 0) : (value ?? 0) });
+        } else if (type === 'tiered') {
+            onChange({ 
+                pricing_type: 'tiered', 
+                tiers: value?.tiers || [{ max_seconds: 1200, cost: typeof value === 'object' ? (value.cost_per_job ?? 0) : (value ?? 0) }, { max_seconds: -1, cost: typeof value === 'object' ? (value.cost_per_job ?? 0) : (value ?? 0) }] 
+            });
+        } else if (type === 'per_minute') {
+            onChange({
+                pricing_type: 'per_minute',
+                cost_per_minute: value?.cost_per_minute || 0.05
+            });
+        }
+    };
+
     const handleAddTier = () => {
         const tiers = [...(value?.tiers || [])];
         tiers.push({ max_seconds: -1, cost: 0 });
@@ -2209,27 +2312,20 @@ function TieredPricingCard({ title, value, onChange }: { title: string, value: a
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                 <div style={{ fontSize: '12px', fontWeight: 600, color: '#10b981' }}>{title}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '10px', color: '#6b7280' }}>Tiered Pricing</span>
-                    <input 
-                        type="checkbox" 
-                        checked={isTiered} 
-                        onChange={(e) => {
-                            const checked = e.target.checked;
-                            setIsTiered(checked);
-                            if (checked) {
-                                onChange({ 
-                                    pricing_type: 'tiered', 
-                                    tiers: value?.tiers || [{ max_seconds: 1200, cost: value?.cost_per_job || 0 }, { max_seconds: -1, cost: value?.cost_per_job || 0 }] 
-                                });
-                            } else {
-                                onChange({ cost_per_job: value?.tiers?.[0]?.cost || 0 });
-                            }
-                        }}
-                    />
+                    <span style={{ fontSize: '10px', color: '#6b7280' }}>Model</span>
+                    <select
+                        value={pricingType}
+                        onChange={(e) => handleTypeChange(e.target.value as any)}
+                        style={{ ...styles.input, padding: '2px 6px', fontSize: '11px', width: '110px', color: '#fff', backgroundColor: '#0a0a0f' }}
+                    >
+                        <option value="flat">Flat Rate</option>
+                        <option value="tiered">Tiered</option>
+                        <option value="per_minute">Per Minute</option>
+                    </select>
                 </div>
             </div>
 
-            {!isTiered ? (
+            {pricingType === 'flat' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <span style={{ fontSize: '11px', color: '#9ca3af' }}>Flat Rate ($)</span>
                     <input 
@@ -2240,7 +2336,22 @@ function TieredPricingCard({ title, value, onChange }: { title: string, value: a
                         style={{ ...styles.input, padding: '4px 8px', fontSize: '12px', width: '80px' }} 
                     />
                 </div>
-            ) : (
+            )}
+
+            {pricingType === 'per_minute' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '11px', color: '#9ca3af' }}>Per Minute ($)</span>
+                    <input 
+                        type="number" 
+                        step="0.001" 
+                        value={value?.cost_per_minute ?? 0.05} 
+                        onChange={(e) => onChange({ pricing_type: 'per_minute', cost_per_minute: Number(e.target.value) })} 
+                        style={{ ...styles.input, padding: '4px 8px', fontSize: '12px', width: '80px' }} 
+                    />
+                </div>
+            )}
+
+            {pricingType === 'tiered' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {value?.tiers?.map((tier: any, i: number) => (
                         <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>

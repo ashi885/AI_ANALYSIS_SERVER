@@ -74,7 +74,7 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
     if (sessionCookie) {
         try {
             const session = typeof sessionCookie === 'string' ? JSON.parse(sessionCookie) : sessionCookie;
-            if (session.email && session.role) {
+            if (session.username && session.role) {
                 (req as any).adminUser = session;
                 return next();
             }
@@ -90,9 +90,9 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
             const auth = authHeader.split(' ')[1];
             if (auth) {
                 const decoded = Buffer.from(auth, 'base64').toString();
-                const [email, password] = decoded.split(':');
+                const [username, password] = decoded.split(':');
                 const db = getDatabase();
-                const user = db.prepare('SELECT * FROM admin_users WHERE email = ? AND password = ?').get(email, password) as any;
+                const user = db.prepare('SELECT * FROM admin_users WHERE username = ? AND password = ?').get(username, password) as any;
                 if (user) {
                     (req as any).adminUser = user;
                     return next();
@@ -170,18 +170,18 @@ mgmtRouter.get('/status/balance-alerts', requireAdminAuth, async (req: Request, 
 // Login endpoint
 mgmtRouter.post('/auth/login', async (req: Request, res: Response) => {
     try {
-        const { email, password } = req.body;
-        console.log(`[Login] Attempt: email="${email}"`);
+        const { username, password } = req.body;
+        console.log(`[Login] Attempt: username="${username}"`);
         
         const db = getDatabase();
-        const user = db.prepare('SELECT * FROM admin_users WHERE email = ? AND password = ?').get(email, password) as any;
+        const user = db.prepare('SELECT * FROM admin_users WHERE username = ? AND password = ?').get(username, password) as any;
 
         if (!user) {
-            console.log(`[Login] No user found for "${email}"`);
+            console.log(`[Login] No user found for "${username}"`);
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        console.log(`[Login] Success for: ${email}`);
+        console.log(`[Login] Success for: ${username}`);
         res.json({ success: true, role: user.role });
     } catch (err: any) {
         console.error('[Login] Exception:', err.message);
