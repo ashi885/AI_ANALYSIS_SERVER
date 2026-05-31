@@ -517,7 +517,7 @@ function App() {
             <div style={{ backgroundColor: '#111118', padding: '40px', borderRadius: '16px', width: '360px', border: '1px solid rgba(255,255,255,0.1)' }}>
                 <h1 style={{ color: 'white', marginBottom: '20px' }}>Cuepoint Admin</h1>
                 {loginError && <div style={{ color: '#ef4444', marginBottom: '10px' }}>{loginError}</div>}
-                <input type="text" placeholder="Email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} style={{ ...styles.input, marginBottom: '10px' }} />
+                <input type="text" placeholder="Username" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} style={{ ...styles.input, marginBottom: '10px' }} />
                 <input type="password" placeholder="Password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} style={{ ...styles.input, marginBottom: '20px' }} />
                 <button onClick={handleLogin} style={{ ...styles.button, width: '100%' }}>Sign In</button>
             </div>
