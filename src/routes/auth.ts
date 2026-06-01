@@ -7,13 +7,13 @@ export const authRouter = Router();
 // Login - validate against users table
 authRouter.post('/login', async (req: Request, res: Response) => {
     try {
-        const { email, password, clientId } = req.body;
+        const { username, password, clientId } = req.body;
         
-        console.log('[Login] Attempt:', { email, clientId });
+        console.log('[Login] Attempt:', { username, clientId });
 
         const db = getDatabase();
-        let query = 'SELECT * FROM users WHERE email = ?';
-        const params: any[] = [email];
+        let query = 'SELECT * FROM users WHERE username = ?';
+        const params: any[] = [username];
 
         if (clientId) {
             query += ' AND client_id = ?';
@@ -22,10 +22,10 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 
         const user = db.prepare(query).get(...params) as any;
 
-        console.log('[Login] User found:', user ? { id: user.id, email: user.email, role: user.role } : 'none');
+        console.log('[Login] User found:', user ? { id: user.id, username: user.username, role: user.role } : 'none');
 
         if (!user) {
-            logger.warn('AUTH', 'LOGIN_FAILED', `User not found: ${email}`, { clientId });
+            logger.warn('AUTH', 'LOGIN_FAILED', `User not found: ${username}`, { clientId });
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
@@ -33,21 +33,21 @@ authRouter.post('/login', async (req: Request, res: Response) => {
         // For now, simple comparison - you should use bcrypt in production
         if (user.password !== password) {
             console.log('[Login] Password mismatch');
-            logger.warn('AUTH', 'LOGIN_FAILED', `Password mismatch for user ${email}`, { clientId });
+            logger.warn('AUTH', 'LOGIN_FAILED', `Password mismatch for user ${username}`, { clientId });
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        console.log('[Login] Success for:', user.email);
-        logger.info('AUTH', 'LOGIN_SUCCESS', `User ${email} logged in successfully`, {
+        console.log('[Login] Success for:', user.username);
+        logger.info('AUTH', 'LOGIN_SUCCESS', `User ${username} logged in successfully`, {
             userId: user.id,
-            email: user.email,
+            username: user.username,
             clientId: user.client_id
         });
 
         // Set session cookies
         const sessionData = JSON.stringify({
             id: user.id,
-            email: user.email,
+            username: user.username,
             role: user.role,
             client_id: user.client_id
         });
@@ -63,7 +63,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
         return res.json({
             success: true,
             role: user.role,
-            user: { id: user.id, email: user.email, client_id: user.client_id }
+            user: { id: user.id, username: user.username, client_id: user.client_id }
         });
     } catch (error) {
         console.error("[Login] Error:", error);

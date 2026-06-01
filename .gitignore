@@ -20,6 +20,10 @@ test_endpoint.ts
 *.old
 data/
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 management.db
+logs/
+uploads/
 nul

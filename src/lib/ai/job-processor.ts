@@ -94,7 +94,10 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
         
         if (modulesRequested.includes('transcription') && !existingResultsMap['transcription']) {
             updateSubStatus('Transcribing audio...');
-            const whisperModel = configuredModels.find((m: any) => m.module_name === 'transcription')?.api_model || 'whisper-1';
+            const whisperModel = configuredModels.find((m: any) => m.module_name === 'transcription')?.api_model || globalFallback;
+            if (!whisperModel) {
+                throw new Error('No AI model configured for transcription and no global fallback set. Please configure an AI model.');
+            }
             const pricingTranscription = await getModulePricing(clientId, 'transcription', durationRequested || 0);
             const billablePriceTranscription = pricingTranscription?.cost_per_job || 0;
             
@@ -878,6 +881,16 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                 resultData.push(...flattenedResults);
             }
             
+            // Build cost map from original results to preserve billing on rerun
+            const originalCostMap: Record<string, { api_cost: number; provider_cost: number }> = {};
+            for (const r of existingResults) {
+                const rKey = r.result_type || r.resultType || r.module_name || r.moduleName;
+                originalCostMap[rKey] = {
+                    api_cost: r.api_cost ?? r.apiCost ?? 0,
+                    provider_cost: r.provider_cost ?? r.providerCost ?? 0
+                };
+            }
+
             // Add ALL existing successful results that weren't just re-processed
             for (const [key, data] of Object.entries(existingResultsMap)) {
                 // Check if this result (by its unique key) is already in the new resultData
@@ -890,6 +903,7 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                     // This is a previously successful result that we didn't rerun (or the rerun failed)
                     // We preserve it so the job's result_data remains complete
                     const isSubtitle = key.startsWith('subtitle_');
+                    const orig = originalCostMap[key] || { api_cost: 0, provider_cost: 0 };
                     resultData.push({
                         module_name: isSubtitle ? 'subtitle_translation' : key,
                         moduleName: isSubtitle ? 'subtitle_translation' : key,
@@ -899,10 +913,10 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
                         resultData: data,
                         processing_time_ms: 0,
                         processingTimeMs: 0,
-                        api_cost: 0,
-                        apiCost: 0,
-                        provider_cost: 0,
-                        providerCost: 0,
+                        api_cost: orig.api_cost,
+                        apiCost: orig.api_cost,
+                        provider_cost: orig.provider_cost,
+                        providerCost: orig.provider_cost,
                         reused: true
                     });
                 }

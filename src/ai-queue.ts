@@ -1,6 +1,6 @@
 import { 
     getClientApiKey, logApiRequest, getDatabase, getModulePricing, 
-    logClientUsage, getClientModuleSettings, deductCredits, getGlobalDefaultModel
+    logClientUsage, getClientModuleSettings, getGlobalDefaultModel
 } from './db-mgmt';
 import { getClientModels } from './middleware/license';
 import { buildPromptParts, PROMPT_TEMPLATES } from './routes/analyze';
@@ -23,26 +23,27 @@ export async function initQueueWorker() {
     const db = getDatabase();
     const isDev = process.env.NODE_ENV === 'development' || process.env.TS_NODE_DEV === 'true' || !process.env.NODE_ENV;
     
-    if (isDev) {
-        // Move stuck jobs to failed to protect balance from Nodemon/development restart loops
-        const act = db.prepare(`
-            UPDATE ai_job_queue 
-            SET status = 'failed', error = 'Server restarted in development mode. Stopped execution to protect balance.' 
-            WHERE status = 'processing'
-        `).run();
-        if (act.changes > 0) {
-            console.log(`[AI Queue] [DEV-PROTECT] Marked ${act.changes} stuck sub-jobs as failed to prevent Nodemon infinite loops.`);
-        }
-        
-        const actMain = db.prepare(`
-            UPDATE ai_jobs 
-            SET queue_status = 'failed', status = 'error', error_message = 'Server restarted in development mode. Stopped execution to protect balance.' 
-            WHERE queue_status = 'processing'
-        `).run();
-        if (actMain.changes > 0) {
-            console.log(`[AI Pipeline] [DEV-PROTECT] Marked ${actMain.changes} stuck main jobs as failed to prevent Nodemon infinite loops.`);
-        }
-    } else {
+    try {
+        if (isDev) {
+            // Move stuck jobs to failed to protect balance from Nodemon/development restart loops
+            const act = db.prepare(`
+                UPDATE ai_job_queue 
+                SET status = 'failed', error = 'Server restarted in development mode. Stopped execution to protect balance.' 
+                WHERE status = 'processing'
+            `).run();
+            if (act.changes > 0) {
+                console.log(`[AI Queue] [DEV-PROTECT] Marked ${act.changes} stuck sub-jobs as failed to prevent Nodemon infinite loops.`);
+            }
+            
+            const actMain = db.prepare(`
+                UPDATE ai_jobs 
+                SET queue_status = 'failed', status = 'error', error_message = 'Server restarted in development mode. Stopped execution to protect balance.' 
+                WHERE queue_status = 'processing'
+            `).run();
+            if (actMain.changes > 0) {
+                console.log(`[AI Pipeline] [DEV-PROTECT] Marked ${actMain.changes} stuck main jobs as failed to prevent Nodemon infinite loops.`);
+            }
+        } else {
         // Safety check: Move any stuck jobs (processing during a crash) back to pending
         const act = db.prepare(`UPDATE ai_job_queue SET status = 'pending' WHERE status = 'processing'`).run();
         if (act.changes > 0) {
@@ -58,6 +59,9 @@ export async function initQueueWorker() {
     // Start background loop (polls every 3 seconds)
     workerInterval = setInterval(processQueue, 3000);
     setInterval(processMainPipeline, 5000);
+    } catch (e: any) {
+        console.error('[AI Queue] FATAL ERROR during initQueueWorker:', e);
+    }
 }
 
 // MAIN PIPELINE LOGIC (Fair-Share Concurrency)
@@ -453,23 +457,14 @@ async function runAILogic(clientId: number, moduleName: string, payload: any, qu
     
     db.prepare(`UPDATE ai_job_queue SET sub_status = 'Finalizing results', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(queueJobId);
 
-    // --- CREDIT DEDUCTION ---
-    let lowCreditWarning = null;
-    if (billingType === 'CREDIT' && moduleCost > 0) {
-        const deduction = await deductCredits(clientId, moduleCost, `Execution of module: ${moduleName} (Async)`, payload.jobId);
-        if (deduction.success && deduction.balance !== undefined && deduction.balance < 5.0) {
-            lowCreditWarning = `Low credit balance: $${deduction.balance.toFixed(2)}. Please top up soon.`;
-        }
-    }
-
     // Return final result layout for the client (Removing targetModel to prevent client-side leak)
+    // Note: Credit deduction is handled internally by logClientUsage()
     return {
         content: result.content,
         usage: result.usage,
         cost: moduleCost,
         provider_cost: result.cost || 0,
-        requestId: requestId,
-        warning: lowCreditWarning
+        requestId: requestId
     };
 }
 

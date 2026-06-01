@@ -8,38 +8,38 @@ exports.authRouter = (0, express_1.Router)();
 // Login - validate against users table
 exports.authRouter.post('/login', async (req, res) => {
     try {
-        const { email, password, clientId } = req.body;
-        console.log('[Login] Attempt:', { email, clientId });
+        const { username, password, clientId } = req.body;
+        console.log('[Login] Attempt:', { username, clientId });
         const db = (0, sqlite_1.getDatabase)();
-        let query = 'SELECT * FROM users WHERE email = ?';
-        const params = [email];
+        let query = 'SELECT * FROM users WHERE username = ?';
+        const params = [username];
         if (clientId) {
             query += ' AND client_id = ?';
             params.push(clientId);
         }
         const user = db.prepare(query).get(...params);
-        console.log('[Login] User found:', user ? { id: user.id, email: user.email, role: user.role } : 'none');
+        console.log('[Login] User found:', user ? { id: user.id, username: user.username, role: user.role } : 'none');
         if (!user) {
-            logger_1.logger.warn('AUTH', 'LOGIN_FAILED', `User not found: ${email}`, { clientId });
+            logger_1.logger.warn('AUTH', 'LOGIN_FAILED', `User not found: ${username}`, { clientId });
             return res.status(401).json({ error: 'Invalid credentials' });
         }
         // Verify password (stored as hashed in production)
         // For now, simple comparison - you should use bcrypt in production
         if (user.password !== password) {
             console.log('[Login] Password mismatch');
-            logger_1.logger.warn('AUTH', 'LOGIN_FAILED', `Password mismatch for user ${email}`, { clientId });
+            logger_1.logger.warn('AUTH', 'LOGIN_FAILED', `Password mismatch for user ${username}`, { clientId });
             return res.status(401).json({ error: 'Invalid credentials' });
         }
-        console.log('[Login] Success for:', user.email);
-        logger_1.logger.info('AUTH', 'LOGIN_SUCCESS', `User ${email} logged in successfully`, {
+        console.log('[Login] Success for:', user.username);
+        logger_1.logger.info('AUTH', 'LOGIN_SUCCESS', `User ${username} logged in successfully`, {
             userId: user.id,
-            email: user.email,
+            username: user.username,
             clientId: user.client_id
         });
         // Set session cookies
         const sessionData = JSON.stringify({
             id: user.id,
-            email: user.email,
+            username: user.username,
             role: user.role,
             client_id: user.client_id
         });
@@ -53,7 +53,7 @@ exports.authRouter.post('/login', async (req, res) => {
         return res.json({
             success: true,
             role: user.role,
-            user: { id: user.id, email: user.email, client_id: user.client_id }
+            user: { id: user.id, username: user.username, client_id: user.client_id }
         });
     }
     catch (error) {

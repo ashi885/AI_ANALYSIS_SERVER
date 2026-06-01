@@ -119,7 +119,10 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
         let transcriptionResult = null;
         if (modulesRequested.includes('transcription') && !existingResultsMap['transcription']) {
             updateSubStatus('Transcribing audio...');
-            const whisperModel = ((_a = configuredModels.find((m) => m.module_name === 'transcription')) === null || _a === void 0 ? void 0 : _a.api_model) || 'whisper-1';
+            const whisperModel = ((_a = configuredModels.find((m) => m.module_name === 'transcription')) === null || _a === void 0 ? void 0 : _a.api_model) || globalFallback;
+            if (!whisperModel) {
+                throw new Error('No AI model configured for transcription and no global fallback set. Please configure an AI model.');
+            }
             const pricingTranscription = await (0, db_mgmt_1.getModulePricing)(clientId, 'transcription', durationRequested || 0);
             const billablePriceTranscription = (pricingTranscription === null || pricingTranscription === void 0 ? void 0 : pricingTranscription.cost_per_job) || 0;
             const transcriber = new whisper_1.WhisperClient({ apiKey: whisperApiKey, model: whisperModel });

@@ -1499,7 +1499,7 @@ mgmtRouter.get('/api-logs', requireAdminAuth, async (req: Request, res: Response
         const { limit = 100, clientId, moduleId } = req.query;
         const db = getDatabase();
         
-        let sql = 'SELECT * FROM api_request_logs';
+        let sql = 'SELECT l.*, c.name as client_name FROM api_request_logs l LEFT JOIN clients c ON l.client_id = c.id';
         const params: any[] = [];
         const conditions: string[] = [];
 
@@ -1789,7 +1789,7 @@ mgmtRouter.post('/ai-queue/:id/retry', requireAuth, async (req: Request, res: Re
         // NEW: Enforce Admin-only rerun control as requested (Optimized: Check server session directly)
         const adminUser = (req as any).adminUser;
         
-        if (adminUser?.role !== 'ADMIN') {
+        if (!adminUser || adminUser.role?.toUpperCase() !== 'ADMIN') {
             return res.status(403).json({ error: "Manual recovery requires administrator approval. Please contact support." });
         }
         
@@ -1804,10 +1804,45 @@ mgmtRouter.post('/ai-queue/:id/retry', requireAuth, async (req: Request, res: Re
         if (!job) return res.status(404).json({ error: 'Job not found' });
         
         // 2. Determine what to run
-        // If targetModules provided, use those. Otherwise default to all requested modules (Smart Skip logic in processor will handle the rest)
-        const modulesToRun = (targetModules && Array.isArray(targetModules) && targetModules.length > 0)
-            ? targetModules
-            : JSON.parse(job.modules_requested || '[]');
+        let modulesToRun: string[];
+
+        if (targetModules && Array.isArray(targetModules) && targetModules.length > 0) {
+            // Explicit selection — retry exactly what admin asked for
+            modulesToRun = targetModules;
+        } else {
+            // Default: derive only failed/missing modules from result_data
+            const allRequested = JSON.parse(job.modules_requested || '[]') as string[];
+            const existingResults = job.result_data ? JSON.parse(job.result_data) : [];
+
+            const erroredModules = new Set<string>();
+            const existingKeys = new Set<string>();
+            for (const r of existingResults) {
+                const key = r.result_type || r.resultType || r.module_name || r.moduleName;
+                if (!key) continue;
+                existingKeys.add(key);
+                if ((r.result_data?.error) || (r.resultData?.error)) {
+                    erroredModules.add(key);
+                }
+            }
+
+            modulesToRun = allRequested.filter(m => erroredModules.has(m) || !existingKeys.has(m));
+
+            if (modulesToRun.length === 0) {
+                return res.json({ success: true, message: 'No failed or missing modules to retry.', nothingToRetry: true });
+            }
+        }
+
+        // Validate audio file exists if transcription is to be retried
+        if (modulesToRun.includes('transcription')) {
+            const audioPath = job.audio_path;
+            if (!audioPath || !fs.existsSync(audioPath)) {
+                logger.warn('AI', 'RETRY_AUDIO_MISSING', `Audio file missing for job ${id}: ${audioPath}. Skipping transcription retry.`);
+                modulesToRun = modulesToRun.filter((m: string) => m !== 'transcription');
+                if (modulesToRun.length === 0) {
+                    return res.json({ success: true, message: 'Audio file not found. Transcription cannot be retried.', nothingToRetry: true, audioMissing: true });
+                }
+            }
+        }
 
         // If targetLanguages provided, use those. Otherwise default to job's target_languages
         const languagesToRun = (targetLanguages && Array.isArray(targetLanguages) && targetLanguages.length > 0)

@@ -580,6 +580,12 @@ async function getModulePricing(clientId, moduleName, duration, asOfDate) {
                 moduleRate = rates['subtitles'];
             }
             if (moduleRate !== undefined) {
+                // Check for per minute pricing
+                if (typeof moduleRate === 'object' && moduleRate.pricing_type === 'per_minute') {
+                    const min = (duration || 0) / 60;
+                    const rate = Number(moduleRate.cost_per_minute || 0);
+                    return { id: -1, cost_per_job: Number((min * rate).toFixed(4)) };
+                }
                 // Check for tiered pricing
                 if (typeof moduleRate === 'object' && moduleRate.pricing_type === 'tiered' && Array.isArray(moduleRate.tiers)) {
                     const dur = duration || 0;

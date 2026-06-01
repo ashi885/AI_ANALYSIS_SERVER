@@ -1,7 +1,0 @@
-[2026-03-31T14:43:26.112Z] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
-[2026-03-31T14:44:18.783Z] [INFO] [AI] JOB_SUBMITTED: Parallel AI job 5bde94ce-18b0-4293-98d5-9fd55d8fd60f submitted | Details: {"clientId":2,"userId":2,"localJobId":"e64da810-9240-4010-bd39-d196a7efaf9d","modulesRequested":["transcription","subtitles","metadata","ad_breaks","promo_breaks"]}
-[2026-03-31T14:44:18.792Z] [INFO] [AI] JOB_PROCESSOR: Job 5bde94ce-18b0-4293-98d5-9fd55d8fd60f transcribing audio | Details: {"clientId":2,"clientName":"EDM"}
-[2026-03-31T14:44:53.699Z] [INFO] [AI] JOB_PROCESSOR_DONE: Job 5bde94ce-18b0-4293-98d5-9fd55d8fd60f finished with status: completed | Details: {"clientId":2,"totalCost":0.07598099902343748}
-[2026-03-31T15:15:52.028Z] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
-[2026-03-31T16:45:04.579Z] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)
-[2026-03-31T16:45:30.782Z] [INFO] [SYSTEM] BOOT: Server started on port 3001 (v1.0.0)

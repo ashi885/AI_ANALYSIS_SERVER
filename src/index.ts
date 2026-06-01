@@ -5,6 +5,15 @@ import fs from 'fs';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
+process.on('uncaughtException', (err) => {
+    console.error('FATAL UNCAUGHT EXCEPTION:', err);
+    process.exit(1);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('FATAL UNHANDLED REJECTION:', reason);
+    process.exit(1);
+});
+
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';

@@ -668,23 +668,14 @@ analyzeRouter.post('/module/:moduleName', licenseMiddleware, async (req: License
             durationSeconds: duration
         });
 
-        // --- CREDIT SYSTEM DEDUCTION ---
-        let lowCreditWarning = null;
-        if (billingType === 'CREDIT' && moduleCost > 0) {
-            const deduction = await deductCredits(clientId!, moduleCost, `Execution of module: ${moduleName}`, body.jobId as string || undefined);
-            if (deduction.success && deduction.balance !== undefined && deduction.balance < 5.0) {
-                lowCreditWarning = `Low credit balance: $${deduction.balance.toFixed(2)}. Please top up soon.`;
-            }
-        }
-        // -------------------------------
+        // Note: Credit deduction is handled internally by logClientUsage()
 
         return res.json({
             content: result.content,
             usage: result.usage,
             cost: moduleCost, // Return the server-set cost, not the raw cost
             model: model,
-            requestId: requestId,
-            warning: lowCreditWarning
+            requestId: requestId
         });
 
     } catch (error: any) {

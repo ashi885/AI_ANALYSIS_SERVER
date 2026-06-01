@@ -25,39 +25,44 @@ async function initQueueWorker() {
     console.log('[AI Queue] Initializing AI Background Worker...');
     const db = (0, db_mgmt_1.getDatabase)();
     const isDev = process.env.NODE_ENV === 'development' || process.env.TS_NODE_DEV === 'true' || !process.env.NODE_ENV;
-    if (isDev) {
-        // Move stuck jobs to failed to protect balance from Nodemon/development restart loops
-        const act = db.prepare(`
-            UPDATE ai_job_queue 
-            SET status = 'failed', error = 'Server restarted in development mode. Stopped execution to protect balance.' 
-            WHERE status = 'processing'
-        `).run();
-        if (act.changes > 0) {
-            console.log(`[AI Queue] [DEV-PROTECT] Marked ${act.changes} stuck sub-jobs as failed to prevent Nodemon infinite loops.`);
+    try {
+        if (isDev) {
+            // Move stuck jobs to failed to protect balance from Nodemon/development restart loops
+            const act = db.prepare(`
+                UPDATE ai_job_queue 
+                SET status = 'failed', error = 'Server restarted in development mode. Stopped execution to protect balance.' 
+                WHERE status = 'processing'
+            `).run();
+            if (act.changes > 0) {
+                console.log(`[AI Queue] [DEV-PROTECT] Marked ${act.changes} stuck sub-jobs as failed to prevent Nodemon infinite loops.`);
+            }
+            const actMain = db.prepare(`
+                UPDATE ai_jobs 
+                SET queue_status = 'failed', status = 'error', error_message = 'Server restarted in development mode. Stopped execution to protect balance.' 
+                WHERE queue_status = 'processing'
+            `).run();
+            if (actMain.changes > 0) {
+                console.log(`[AI Pipeline] [DEV-PROTECT] Marked ${actMain.changes} stuck main jobs as failed to prevent Nodemon infinite loops.`);
+            }
         }
-        const actMain = db.prepare(`
-            UPDATE ai_jobs 
-            SET queue_status = 'failed', status = 'error', error_message = 'Server restarted in development mode. Stopped execution to protect balance.' 
-            WHERE queue_status = 'processing'
-        `).run();
-        if (actMain.changes > 0) {
-            console.log(`[AI Pipeline] [DEV-PROTECT] Marked ${actMain.changes} stuck main jobs as failed to prevent Nodemon infinite loops.`);
+        else {
+            // Safety check: Move any stuck jobs (processing during a crash) back to pending
+            const act = db.prepare(`UPDATE ai_job_queue SET status = 'pending' WHERE status = 'processing'`).run();
+            if (act.changes > 0) {
+                console.log(`[AI Queue] Recovered ${act.changes} sub-jobs stuck in processing state.`);
+            }
+            const actMain = db.prepare(`UPDATE ai_jobs SET queue_status = 'pending' WHERE queue_status = 'processing'`).run();
+            if (actMain.changes > 0) {
+                console.log(`[AI Pipeline] Recovered ${actMain.changes} main jobs stuck in processing state.`);
+            }
         }
+        // Start background loop (polls every 3 seconds)
+        workerInterval = setInterval(processQueue, 3000);
+        setInterval(processMainPipeline, 5000);
     }
-    else {
-        // Safety check: Move any stuck jobs (processing during a crash) back to pending
-        const act = db.prepare(`UPDATE ai_job_queue SET status = 'pending' WHERE status = 'processing'`).run();
-        if (act.changes > 0) {
-            console.log(`[AI Queue] Recovered ${act.changes} sub-jobs stuck in processing state.`);
-        }
-        const actMain = db.prepare(`UPDATE ai_jobs SET queue_status = 'pending' WHERE queue_status = 'processing'`).run();
-        if (actMain.changes > 0) {
-            console.log(`[AI Pipeline] Recovered ${actMain.changes} main jobs stuck in processing state.`);
-        }
+    catch (e) {
+        console.error('[AI Queue] FATAL ERROR during initQueueWorker:', e);
     }
-    // Start background loop (polls every 3 seconds)
-    workerInterval = setInterval(processQueue, 3000);
-    setInterval(processMainPipeline, 5000);
 }
 // MAIN PIPELINE LOGIC (Fair-Share Concurrency)
 const MAX_GLOBAL_CONCURRENT = 5;

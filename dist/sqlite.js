@@ -323,7 +323,7 @@ function createTables() {
 
         CREATE TABLE IF NOT EXISTS admin_users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
+            username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
             role TEXT DEFAULT 'admin',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -331,7 +331,7 @@ function createTables() {
 
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
+            username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
             role TEXT DEFAULT 'USER' CHECK(role IN ('ADMIN', 'USER')),
             client_id INTEGER,
@@ -424,6 +424,14 @@ function createTables() {
         }
         catch (_) { /* column already exists */ }
     }
+    try {
+        db.exec("ALTER TABLE admin_users RENAME COLUMN email TO username;");
+    }
+    catch (e) { }
+    try {
+        db.exec("ALTER TABLE users RENAME COLUMN email TO username;");
+    }
+    catch (e) { }
     // Indices should be created AFTER migrations in case columns were just added
     const indices = [
         `CREATE INDEX IF NOT EXISTS idx_api_logs_request_id ON api_request_logs(request_id)`,
@@ -440,24 +448,24 @@ function seedDefaultData() {
     if (!db)
         return;
     // Seed admin with cuepoint2025 password
-    const adminExists = db.prepare('SELECT id FROM admin_users WHERE email = ? AND password = ?').get('admin', 'cuepoint2025');
+    const adminExists = db.prepare('SELECT id FROM admin_users WHERE username = ? AND password = ?').get('admin', 'cuepoint2025');
     if (!adminExists) {
-        db.prepare('INSERT OR REPLACE INTO admin_users (email, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint2025', 'admin');
+        db.prepare('INSERT OR REPLACE INTO admin_users (username, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint2025', 'admin');
     }
     // Seed admin with cuepoint-admin password to support unified credentials
-    const adminAltExists = db.prepare('SELECT id FROM admin_users WHERE email = ? AND password = ?').get('admin', 'cuepoint-admin');
+    const adminAltExists = db.prepare('SELECT id FROM admin_users WHERE username = ? AND password = ?').get('admin', 'cuepoint-admin');
     if (!adminAltExists) {
-        db.prepare('INSERT OR IGNORE INTO admin_users (email, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint-admin', 'admin');
+        db.prepare('INSERT OR IGNORE INTO admin_users (username, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint-admin', 'admin');
     }
-    // Seed admin@cuepoint.com with cuepoint-admin
-    const adminEmailExists = db.prepare('SELECT id FROM admin_users WHERE email = ? AND password = ?').get('admin@cuepoint.com', 'cuepoint-admin');
+    // Seed cueadmin with cuepoint-admin
+    const adminEmailExists = db.prepare('SELECT id FROM admin_users WHERE username = ? AND password = ?').get('cueadmin', 'cuepoint-admin');
     if (!adminEmailExists) {
-        db.prepare('INSERT OR REPLACE INTO admin_users (email, password, role) VALUES (?, ?, ?)').run('admin@cuepoint.com', 'cuepoint-admin', 'admin');
+        db.prepare('INSERT OR REPLACE INTO admin_users (username, password, role) VALUES (?, ?, ?)').run('cueadmin', 'cuepoint-admin', 'admin');
     }
-    const userExists = db.prepare('SELECT id FROM users WHERE email = ?').get('admin');
+    const userExists = db.prepare('SELECT id FROM users WHERE username = ?').get('cueadmin');
     if (!userExists) {
-        db.prepare('INSERT INTO users (email, password, role) VALUES (?, ?, ?)').run('admin', 'cuepoint-admin', 'ADMIN');
-        db.prepare('INSERT INTO users (email, password, role) VALUES (?, ?, ?)').run('user@cuepoint.com', 'cuepoint-user', 'USER');
+        db.prepare('INSERT INTO users (username, password, role) VALUES (?, ?, ?)').run('cueadmin', 'cuepoint-admin', 'ADMIN');
+        db.prepare('INSERT INTO users (username, password, role) VALUES (?, ?, ?)').run('cueuser', 'cuepoint-user', 'USER');
     }
     // Create default client if none exists
     const clientExists = db.prepare('SELECT id FROM clients LIMIT 1').get();

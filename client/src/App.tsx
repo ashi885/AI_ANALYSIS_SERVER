@@ -342,11 +342,11 @@ function App() {
             const savedAuth = localStorage.getItem('cuepoint_admin_auth');
             if (savedAuth) {
                 const decoded = atob(savedAuth);
-                const [email, password] = decoded.split(':');
+                const [username, password] = decoded.split(':');
                 const res = await fetch('/api/mgmt/auth/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, password })
+                    body: JSON.stringify({ username, password })
                 });
                 if (res.ok) setIsAuthenticated(true);
                 else localStorage.removeItem('cuepoint_admin_auth');
@@ -459,7 +459,7 @@ function App() {
             const res = await authFetch(`/api/mgmt/clients/${clientId}/api-keys`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider, apiKey })
+                body: JSON.stringify({ provider, api_key: apiKey })
             });
             if (res.ok) fetchData();
         } catch (err) { console.error(err); }
@@ -2630,7 +2630,7 @@ function ClientModal({ client, authFetch, onClose, onSave, saving }: { client: C
                 </div>
 
                 <div style={{ marginBottom: '20px', padding: '16px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
-                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '16px' }}>Module Pricing (per job)</label>
+                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '16px' }}>Module Pricing setting</label>
                     
                     <TieredPricingCard 
                         title="Transcription" 
@@ -2642,6 +2642,12 @@ function ClientModal({ client, authFetch, onClose, onSave, saving }: { client: C
                         title="Subtitles" 
                         value={formData.module_rates?.subtitles} 
                         onChange={(val) => setFormData({ ...formData, module_rates: { ...formData.module_rates, subtitles: val } })} 
+                    />
+                    
+                    <TieredPricingCard 
+                        title="Subtitle Translation" 
+                        value={formData.module_rates?.subtitle_translation} 
+                        onChange={(val) => setFormData({ ...formData, module_rates: { ...formData.module_rates, subtitle_translation: val } })} 
                     />
                     
                     <TieredPricingCard 

@@ -100,7 +100,7 @@ const requireAuth = async (req, res, next) => {
     if (sessionCookie) {
         try {
             const session = typeof sessionCookie === 'string' ? JSON.parse(sessionCookie) : sessionCookie;
-            if (session.email && session.role) {
+            if (session.username && session.role) {
                 req.adminUser = session;
                 return next();
             }
@@ -116,9 +116,9 @@ const requireAuth = async (req, res, next) => {
             const auth = authHeader.split(' ')[1];
             if (auth) {
                 const decoded = Buffer.from(auth, 'base64').toString();
-                const [email, password] = decoded.split(':');
+                const [username, password] = decoded.split(':');
                 const db = (0, sqlite_1.getDatabase)();
-                const user = db.prepare('SELECT * FROM admin_users WHERE email = ? AND password = ?').get(email, password);
+                const user = db.prepare('SELECT * FROM admin_users WHERE username = ? AND password = ?').get(username, password);
                 if (user) {
                     req.adminUser = user;
                     return next();
@@ -186,15 +186,15 @@ exports.mgmtRouter.get('/status/balance-alerts', requireAdminAuth, async (req, r
 // Login endpoint
 exports.mgmtRouter.post('/auth/login', async (req, res) => {
     try {
-        const { email, password } = req.body;
-        console.log(`[Login] Attempt: email="${email}"`);
+        const { username, password } = req.body;
+        console.log(`[Login] Attempt: username="${username}"`);
         const db = (0, sqlite_1.getDatabase)();
-        const user = db.prepare('SELECT * FROM admin_users WHERE email = ? AND password = ?').get(email, password);
+        const user = db.prepare('SELECT * FROM admin_users WHERE username = ? AND password = ?').get(username, password);
         if (!user) {
-            console.log(`[Login] No user found for "${email}"`);
+            console.log(`[Login] No user found for "${username}"`);
             return res.status(401).json({ error: 'Invalid credentials' });
         }
-        console.log(`[Login] Success for: ${email}`);
+        console.log(`[Login] Success for: ${username}`);
         res.json({ success: true, role: user.role });
     }
     catch (err) {
@@ -1588,13 +1588,14 @@ exports.mgmtRouter.post('/ai-queue/:id/free', requireAdminAuth, async (req, res)
 });
 // Retry a failed or partial ai_job (Enhanced for surgical retries)
 exports.mgmtRouter.post('/ai-queue/:id/retry', requireAuth, async (req, res) => {
+    var _a, _b, _c;
     try {
         const { id } = req.params;
         const { targetModules, targetLanguages } = req.body;
         const db = (0, sqlite_1.getDatabase)();
         // NEW: Enforce Admin-only rerun control as requested (Optimized: Check server session directly)
         const adminUser = req.adminUser;
-        if ((adminUser === null || adminUser === void 0 ? void 0 : adminUser.role) !== 'ADMIN') {
+        if (!adminUser || ((_a = adminUser.role) === null || _a === void 0 ? void 0 : _a.toUpperCase()) !== 'ADMIN') {
             return res.status(403).json({ error: "Manual recovery requires administrator approval. Please contact support." });
         }
         // 1. Get job info
@@ -1607,10 +1608,42 @@ exports.mgmtRouter.post('/ai-queue/:id/retry', requireAuth, async (req, res) => 
         if (!job)
             return res.status(404).json({ error: 'Job not found' });
         // 2. Determine what to run
-        // If targetModules provided, use those. Otherwise default to all requested modules (Smart Skip logic in processor will handle the rest)
-        const modulesToRun = (targetModules && Array.isArray(targetModules) && targetModules.length > 0)
-            ? targetModules
-            : JSON.parse(job.modules_requested || '[]');
+        let modulesToRun;
+        if (targetModules && Array.isArray(targetModules) && targetModules.length > 0) {
+            // Explicit selection — retry exactly what admin asked for
+            modulesToRun = targetModules;
+        }
+        else {
+            // Default: derive only failed/missing modules from result_data
+            const allRequested = JSON.parse(job.modules_requested || '[]');
+            const existingResults = job.result_data ? JSON.parse(job.result_data) : [];
+            const erroredModules = new Set();
+            const existingKeys = new Set();
+            for (const r of existingResults) {
+                const key = r.result_type || r.resultType || r.module_name || r.moduleName;
+                if (!key)
+                    continue;
+                existingKeys.add(key);
+                if (((_b = r.result_data) === null || _b === void 0 ? void 0 : _b.error) || ((_c = r.resultData) === null || _c === void 0 ? void 0 : _c.error)) {
+                    erroredModules.add(key);
+                }
+            }
+            modulesToRun = allRequested.filter(m => erroredModules.has(m) || !existingKeys.has(m));
+            if (modulesToRun.length === 0) {
+                return res.json({ success: true, message: 'No failed or missing modules to retry.', nothingToRetry: true });
+            }
+        }
+        // Validate audio file exists if transcription is to be retried
+        if (modulesToRun.includes('transcription')) {
+            const audioPath = job.audio_path;
+            if (!audioPath || !fs_1.default.existsSync(audioPath)) {
+                logger_1.logger.warn('AI', 'RETRY_AUDIO_MISSING', `Audio file missing for job ${id}: ${audioPath}. Skipping transcription retry.`);
+                modulesToRun = modulesToRun.filter((m) => m !== 'transcription');
+                if (modulesToRun.length === 0) {
+                    return res.json({ success: true, message: 'Audio file not found. Transcription cannot be retried.', nothingToRetry: true, audioMissing: true });
+                }
+            }
+        }
         // If targetLanguages provided, use those. Otherwise default to job's target_languages
         const languagesToRun = (targetLanguages && Array.isArray(targetLanguages) && targetLanguages.length > 0)
             ? targetLanguages
