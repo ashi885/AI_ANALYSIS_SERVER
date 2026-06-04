@@ -138,24 +138,6 @@ class PreparedStatement {
             }
         }
         if (parsed.orderBy) {
-            mgmtRouter.post('/clients/:id/api-keys', requireAdminAuth, async (req, res) => {
-                const clientId = parseInt(String(req.params.id));
-                const provider = String(req.body.provider);
-                const { api_key } = req.body;
-                // Disallow Vision AI API key configuration - feature coming soon
-                if (provider === 'vision_ai') {
-                    return res.status(403).json({ error: 'Vision AI module is currently disabled (coming soon)' });
-                }
-                if (!provider || !api_key)
-                    return res.status(400).json({ error: 'Provider and api_key are required' });
-                const db = (0, sqlite_1.getDatabase)();
-                const client = db.prepare('SELECT api_key FROM clients WHERE id = ?').get(clientId);
-                const success = await setClientApiKey(clientId, provider, api_key);
-                if (success && (client === null || client === void 0 ? void 0 : client.api_key)) {
-                    await refreshLicenseInCache(clientId, client.api_key);
-                }
-                res.json({ success });
-            });
             const orderParts = parsed.orderBy.split(/\s+/);
             const orderCol = orderParts[0];
             const orderDir = ((_a = orderParts[1]) === null || _a === void 0 ? void 0 : _a.toLowerCase()) === 'desc' ? 'DESC' : 'ASC';

@@ -3,7 +3,7 @@ import multer from 'multer';
 import { WhisperClient } from '../lib/ai/whisper';
 import { OpenRouterClient } from '../lib/ai/openrouter';
 import { licenseMiddleware, LicensedRequest, getClientModels } from '../middleware/license';
-import { getClientApiKey, logApiRequest, getDatabase, getModulePricing, logClientUsage } from '../db-mgmt';
+import { getClientApiKey, logApiRequest, getDatabase, getModulePricing, logClientUsage, getClientById } from '../db-mgmt';
 import { logger } from '../logger';
 import { processAiJob } from '../lib/ai/job-processor';
 import crypto from 'crypto';
@@ -311,6 +311,27 @@ aiRouter.post('/job', licenseMiddleware, upload.single('audio'), async (req: Lic
             return res.status(400).json({ error: 'Modules list cannot be empty' });
         }
 
+        // ── CREDIT SYSTEM CHECK ──
+        const clientInfo = await getClientById(clientId!);
+        const billingType = clientInfo?.billing_type || 'PER_REQUEST';
+        const duration = req.body.duration ? parseFloat(String(req.body.duration)) : 0;
+
+        if (billingType === 'CREDIT') {
+            let totalEstimated = 0;
+            for (const mod of modulesRequested) {
+                const pricing = await getModulePricing(clientId!, mod, duration);
+                totalEstimated += pricing?.cost_per_job || 0;
+            }
+            if ((clientInfo?.credits || 0) < totalEstimated) {
+                return res.status(402).json({
+                    error: 'Insufficient credits. Please top up your account.',
+                    balance: clientInfo?.credits || 0,
+                    required: totalEstimated
+                });
+            }
+        }
+        // ──────────────────────────
+
         const jobId = crypto.randomUUID();
         const db = getDatabase();
 
@@ -336,8 +357,6 @@ aiRouter.post('/job', licenseMiddleware, upload.single('audio'), async (req: Lic
                 logger.warn('AI', 'JOB_SUBMIT_LANG_PARSE_ERROR', 'Failed to parse target_languages', { jobId, targetLanguagesRaw });
             }
         }
-
-        const duration = req.body.duration ? parseFloat(String(req.body.duration)) : 0;
 
         db.prepare(`
             INSERT INTO ai_jobs (id, client_id, user_id, local_job_id, status, modules_requested, target_languages, audio_path, file_duration, queue_status, priority)

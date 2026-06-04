@@ -269,6 +269,25 @@ exports.aiRouter.post('/job', license_1.licenseMiddleware, upload.single('audio'
         if (!Array.isArray(modulesRequested) || modulesRequested.length === 0) {
             return res.status(400).json({ error: 'Modules list cannot be empty' });
         }
+        // ── CREDIT SYSTEM CHECK ──
+        const clientInfo = await (0, db_mgmt_1.getClientById)(clientId);
+        const billingType = (clientInfo === null || clientInfo === void 0 ? void 0 : clientInfo.billing_type) || 'PER_REQUEST';
+        const duration = req.body.duration ? parseFloat(String(req.body.duration)) : 0;
+        if (billingType === 'CREDIT') {
+            let totalEstimated = 0;
+            for (const mod of modulesRequested) {
+                const pricing = await (0, db_mgmt_1.getModulePricing)(clientId, mod, duration);
+                totalEstimated += (pricing === null || pricing === void 0 ? void 0 : pricing.cost_per_job) || 0;
+            }
+            if (((clientInfo === null || clientInfo === void 0 ? void 0 : clientInfo.credits) || 0) < totalEstimated) {
+                return res.status(402).json({
+                    error: 'Insufficient credits. Please top up your account.',
+                    balance: (clientInfo === null || clientInfo === void 0 ? void 0 : clientInfo.credits) || 0,
+                    required: totalEstimated
+                });
+            }
+        }
+        // ──────────────────────────
         const jobId = crypto_1.default.randomUUID();
         const db = (0, db_mgmt_1.getDatabase)();
         // Accept optional tracing fields from the client
@@ -292,7 +311,6 @@ exports.aiRouter.post('/job', license_1.licenseMiddleware, upload.single('audio'
                 logger_1.logger.warn('AI', 'JOB_SUBMIT_LANG_PARSE_ERROR', 'Failed to parse target_languages', { jobId, targetLanguagesRaw });
             }
         }
-        const duration = req.body.duration ? parseFloat(String(req.body.duration)) : 0;
         db.prepare(`
             INSERT INTO ai_jobs (id, client_id, user_id, local_job_id, status, modules_requested, target_languages, audio_path, file_duration, queue_status, priority)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)

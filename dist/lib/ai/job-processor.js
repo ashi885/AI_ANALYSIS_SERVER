@@ -15,23 +15,13 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -48,7 +38,7 @@ const analyze_1 = require("../../routes/analyze");
 const logger_1 = require("../../logger");
 // Job Processor logic
 async function processAiJob(jobId, audioPath, modulesRequested, clientId, clientName, durationRequested = null, targetLanguages, abortSignal) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
     const db = (0, db_mgmt_1.getDatabase)();
     let totalCost = 0;
     let billedTotalCost = 0;
@@ -833,6 +823,15 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                 const flattenedResults = orResults.flat();
                 resultData.push(...flattenedResults);
             }
+            // Build cost map from original results to preserve billing on rerun
+            const originalCostMap = {};
+            for (const r of existingResults) {
+                const rKey = r.result_type || r.resultType || r.module_name || r.moduleName;
+                originalCostMap[rKey] = {
+                    api_cost: (_k = (_j = r.api_cost) !== null && _j !== void 0 ? _j : r.apiCost) !== null && _k !== void 0 ? _k : 0,
+                    provider_cost: (_m = (_l = r.provider_cost) !== null && _l !== void 0 ? _l : r.providerCost) !== null && _m !== void 0 ? _m : 0
+                };
+            }
             // Add ALL existing successful results that weren't just re-processed
             for (const [key, data] of Object.entries(existingResultsMap)) {
                 // Check if this result (by its unique key) is already in the new resultData
@@ -844,6 +843,7 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                     // This is a previously successful result that we didn't rerun (or the rerun failed)
                     // We preserve it so the job's result_data remains complete
                     const isSubtitle = key.startsWith('subtitle_');
+                    const orig = originalCostMap[key] || { api_cost: 0, provider_cost: 0 };
                     resultData.push({
                         module_name: isSubtitle ? 'subtitle_translation' : key,
                         moduleName: isSubtitle ? 'subtitle_translation' : key,
@@ -853,10 +853,10 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
                         resultData: data,
                         processing_time_ms: 0,
                         processingTimeMs: 0,
-                        api_cost: 0,
-                        apiCost: 0,
-                        provider_cost: 0,
-                        providerCost: 0,
+                        api_cost: orig.api_cost,
+                        apiCost: orig.api_cost,
+                        provider_cost: orig.provider_cost,
+                        providerCost: orig.provider_cost,
                         reused: true
                     });
                 }
@@ -905,7 +905,7 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
             try {
                 fs_1.default.unlinkSync(audioPath);
             }
-            catch (_j) { }
+            catch (_o) { }
         }
         else if (failedModules.length > 0) {
             logger_1.logger.ai('AI_AUDIO_RETAINED', `Job ${jobId} audio retained for rerunning failed modules: ${failedModules.join(', ')}`, { clientId });

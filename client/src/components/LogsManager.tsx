@@ -29,60 +29,61 @@ interface LogsManagerProps {
 
 // Design Tokens (Matching App.tsx)
 const COLORS = {
-  bg: '#0a0a0f',
-  sidebar: '#0d0d12',
-  card: '#111118',
-  primary: '#10b981',
-  border: 'rgba(255,255,255,0.05)',
-  textMain: '#ffffff',
-  textDim: '#9ca3af',
-  textMuted: '#6b7280',
-  error: '#ef4444',
-  warn: '#f59e0b',
-  info: '#3b82f6'
+  bg: 'var(--color-bg)',
+  sidebar: 'var(--color-sidebar)',
+  card: 'var(--color-card)',
+  primary: 'var(--color-primary)',
+  border: 'var(--color-border)',
+  textMain: 'var(--color-text-main)',
+  textDim: 'var(--color-text-dim)',
+  textMuted: 'var(--color-text-muted)',
+  error: 'var(--color-error)',
+  warn: 'var(--color-warn)',
+  info: 'var(--color-info)'
 };
 
 const localStyles: Record<string, React.CSSProperties> = {
   container: { display: 'flex', flexDirection: 'column', height: '100%', width: '100%', backgroundColor: COLORS.bg, color: COLORS.textMain, overflow: 'hidden' },
-  headerReplacementSlot: { padding: '12px 24px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', backgroundColor: 'rgba(13,13,18,0.4)', backdropFilter: 'blur(10px)', flexShrink: 0 },
+  headerReplacementSlot: { padding: '12px 24px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', backgroundColor: COLORS.sidebar, backdropFilter: 'blur(10px)', flexShrink: 0 },
   
-  dateStrip: { display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px', padding: '12px 24px', backgroundColor: 'rgba(0,0,0,0.2)', borderBottom: `1px solid ${COLORS.border}`, overflowX: 'auto', flexShrink: 0, transition: 'opacity 0.3s ease' },
+  dateStrip: { display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px', padding: '12px 24px', backgroundColor: COLORS.sidebar, borderBottom: `1px solid ${COLORS.border}`, overflowX: 'auto', flexShrink: 0, transition: 'opacity 0.3s ease' },
   dateButton: { display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '64px', padding: '8px 4px', borderRadius: '12px', border: '1px solid transparent', cursor: 'pointer', transition: 'all 0.2s' },
-  dateButtonActive: { backgroundColor: 'rgba(16,185,129,0.1)', borderColor: 'rgba(16,185,129,0.3)', color: COLORS.primary },
-  dateButtonInactive: { backgroundColor: 'rgba(255,255,255,0.03)', color: COLORS.textMuted },
+  dateButtonActive: { backgroundColor: 'color-mix(in srgb, var(--color-primary) 15%, transparent)', borderColor: 'color-mix(in srgb, var(--color-primary) 30%, transparent)', color: COLORS.primary },
+  dateButtonInactive: { backgroundColor: 'color-mix(in srgb, var(--color-border) 50%, transparent)', color: COLORS.textMuted },
   
   mainArea: { display: 'flex', flex: 1, overflow: 'hidden' },
-  sidebar: { width: '260px', borderRight: `1px solid ${COLORS.border}`, backgroundColor: 'rgba(0,0,0,0.1)', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', overflowY: 'auto' },
+  sidebar: { width: '260px', borderRight: `1px solid ${COLORS.border}`, backgroundColor: 'color-mix(in srgb, var(--color-text-main) 3%, transparent)', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', overflowY: 'auto' },
   filterSection: { display: 'flex', flexDirection: 'column', gap: '12px' },
   sectionTitle: { fontSize: '10px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.1em' },
   
-  diagButton: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', borderRadius: '12px', border: '1px solid transparent', cursor: 'pointer', transition: 'all 0.2s', width: '100%', textAlign: 'left', backgroundColor: 'rgba(255,255,255,0.03)' },
-  diagButtonActive: { backgroundColor: 'rgba(16,185,129,0.1)', borderColor: 'rgba(16,185,129,0.2)', color: 'white' },
+  diagButton: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', borderRadius: '12px', border: '1px solid transparent', cursor: 'pointer', transition: 'all 0.2s', width: '100%', textAlign: 'left', backgroundColor: 'color-mix(in srgb, var(--color-text-main) 3%, transparent)' },
+  diagButtonActive: { backgroundColor: 'color-mix(in srgb, var(--color-primary) 15%, transparent)', borderColor: 'color-mix(in srgb, var(--color-primary) 25%, transparent)', color: COLORS.textMain },
   
   pillContainer: { display: 'flex', flexWrap: 'wrap', gap: '8px' },
   pill: { padding: '6px 10px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', cursor: 'pointer', border: '1px solid transparent' },
-  pillActive: { backgroundColor: 'rgba(16,185,129,0.1)', borderColor: COLORS.primary, color: COLORS.primary },
-  pillInactive: { backgroundColor: 'rgba(255,255,255,0.05)', color: COLORS.textMuted },
+  pillActive: { backgroundColor: 'color-mix(in srgb, var(--color-primary) 15%, transparent)', borderColor: COLORS.primary, color: COLORS.primary },
+  pillInactive: { backgroundColor: 'color-mix(in srgb, var(--color-text-main) 5%, transparent)', color: COLORS.textMuted },
 
   content: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 },
   toolbar: { padding: '12px 24px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', gap: '16px', alignItems: 'center' },
   searchContainer: { flex: 1, position: 'relative' },
-  input: { width: '100%', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '12px 14px 12px 40px', color: 'white', fontSize: '13px', outline: 'none' },
+  input: { width: '100%', backgroundColor: COLORS.sidebar, border: `1px solid ${COLORS.border}`, borderRadius: '10px', padding: '12px 14px 12px 40px', color: COLORS.textMain, fontSize: '13px', outline: 'none' },
   
   tableContainer: { flex: 1, overflow: 'auto', padding: '0 24px 24px 24px' },
   table: { width: '100%', borderCollapse: 'collapse' },
   thead: { position: 'sticky', top: 0, zIndex: 1, backgroundColor: COLORS.bg },
   th: { textAlign: 'left' as const, padding: '16px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: COLORS.textMuted, borderBottom: `1px solid ${COLORS.border}` },
-  tr: { borderBottom: '1px solid rgba(255,255,255,0.03)', cursor: 'pointer' },
+  tr: { borderBottom: `1px solid ${COLORS.border}`, cursor: 'pointer' },
   td: { padding: '14px 16px', fontSize: '13px' },
   
   badge: { padding: '4px 8px', borderRadius: '6px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase' },
+  errorText: { color: COLORS.error, fontWeight: 600, fontSize: '11px' },
   
-  inspector: { position: 'fixed', right: 0, top: 0, bottom: 0, width: '500px', backgroundColor: '#0f0f15', borderLeft: '1px solid rgba(255,255,255,0.1)', zIndex: 100, display: 'flex', flexDirection: 'column', boxShadow: '-20px 0 50px rgba(0,0,0,0.5)' },
+  inspector: { position: 'fixed', right: 0, top: 0, bottom: 0, width: '500px', backgroundColor: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, zIndex: 100, display: 'flex', flexDirection: 'column', boxShadow: '-20px 0 50px rgba(0,0,0,0.5)' },
   inspectorHeader: { padding: '24px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   
   toggleContainer: { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', userSelect: 'none' },
-  toggleTrack: { width: '36px', height: '20px', borderRadius: '20px', backgroundColor: 'rgba(255,255,255,0.1)', position: 'relative', transition: 'background-color 0.2s' },
+  toggleTrack: { width: '36px', height: '20px', borderRadius: '20px', backgroundColor: 'color-mix(in srgb, var(--color-text-main) 15%, transparent)', position: 'relative', transition: 'background-color 0.2s' },
   toggleThumb: { width: '16px', height: '16px', borderRadius: '50%', backgroundColor: 'white', position: 'absolute', top: '2px', left: '2px', transition: 'left 0.2s' }
 };
 
@@ -308,7 +309,7 @@ export const LogsManager: React.FC<LogsManagerProps> = ({ authFetch }) => {
                     style={{ 
                         backgroundColor: '#1a1a24',
                         border: '1px solid rgba(255,255,255,0.1)',
-                        color: 'white',
+                        color: COLORS.textMain,
                         padding: '6px 16px',
                         borderRadius: '8px',
                         fontSize: '13px',
@@ -453,7 +454,7 @@ export const LogsManager: React.FC<LogsManagerProps> = ({ authFetch }) => {
                             border: '1px solid rgba(255,255,255,0.05)',
                             borderRadius: '12px',
                             fontSize: '13px',
-                            color: 'white',
+                            color: COLORS.textMain,
                             width: '100%'
                         }}
                     />

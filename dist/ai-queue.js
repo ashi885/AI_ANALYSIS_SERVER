@@ -411,22 +411,14 @@ async function runAILogic(clientId, moduleName, payload, queueJobId) {
         durationSeconds: duration
     });
     db.prepare(`UPDATE ai_job_queue SET sub_status = 'Finalizing results', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(queueJobId);
-    // --- CREDIT DEDUCTION ---
-    let lowCreditWarning = null;
-    if (billingType === 'CREDIT' && moduleCost > 0) {
-        const deduction = await (0, db_mgmt_1.deductCredits)(clientId, moduleCost, `Execution of module: ${moduleName} (Async)`, payload.jobId);
-        if (deduction.success && deduction.balance !== undefined && deduction.balance < 5.0) {
-            lowCreditWarning = `Low credit balance: $${deduction.balance.toFixed(2)}. Please top up soon.`;
-        }
-    }
     // Return final result layout for the client (Removing targetModel to prevent client-side leak)
+    // Note: Credit deduction is handled internally by logClientUsage()
     return {
         content: result.content,
         usage: result.usage,
         cost: moduleCost,
         provider_cost: result.cost || 0,
-        requestId: requestId,
-        warning: lowCreditWarning
+        requestId: requestId
     };
 }
 // Subtitle Formatting Helpers
