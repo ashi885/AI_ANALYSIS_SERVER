@@ -751,6 +751,7 @@ mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
                 shortCode: (cached as any).shortCode || cached.name.substring(0, 3).toUpperCase(),
                 moduleRates: (cached as any).allowRateCardFetch ? (cached as any).moduleRates : null,
                 allowRateCardFetch: !!(cached as any).allowRateCardFetch,
+                maintenance_mode: (cached as any).maintenance_mode ?? 0,
                 _cached: true
             });
         }
@@ -786,7 +787,8 @@ mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
             credits: client.credits || 0,
             timezone: client.timezone || 'UTC',
             moduleRates: client.allow_rate_card_fetch ? (typeof client.module_rates === 'string' ? JSON.parse(client.module_rates) : client.module_rates) : null,
-            allowRateCardFetch: !!client.allow_rate_card_fetch
+            allowRateCardFetch: !!client.allow_rate_card_fetch,
+            maintenance_mode: client.maintenance_mode ?? 0
         });
     } catch (err: any) {
         res.status(500).json({ error: err.message });

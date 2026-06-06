@@ -44,6 +44,7 @@ interface ClientLicenseState {
     configuredModels: Array<{ module_name: string; api_provider: string; api_model: string }>;
     moduleRates: Record<string, any>;
     allowRateCardFetch: boolean;
+    maintenance_mode: number;
     // Credentials for client app
     supabaseUrl: string | null;
     supabaseAnonKey: string | null;
@@ -232,6 +233,7 @@ export async function initializeFileCache(): Promise<void> {
                 configuredModels: [], // Will be populated on demand
                 moduleRates,
                 allowRateCardFetch: !!client.allow_rate_card_fetch,
+                maintenance_mode: client.maintenance_mode ?? 0,
                 supabaseUrl: credentials.supabase_url,
                 supabaseAnonKey: credentials.supabase_anon_key,
                 cachedAt: new Date().toISOString(),
@@ -342,6 +344,7 @@ export async function refreshClientInFileCache(clientId: number, apiKey: string,
             configuredModels: [],
             moduleRates,
             allowRateCardFetch: !!clientData.allow_rate_card_fetch,
+            maintenance_mode: clientData.maintenance_mode ?? 0,
             supabaseUrl: credentials.supabase_url,
             supabaseAnonKey: credentials.supabase_anon_key,
             cachedAt: new Date().toISOString(),
