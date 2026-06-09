@@ -16,8 +16,11 @@ process.on('unhandledRejection', (reason, promise) => {
 
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import { authRouter } from './routes/auth';
+import { authTokenRouter } from './routes/auth-tokens';
 import { aiRouter } from './routes/ai';
 import { analyzeRouter } from './routes/analyze';
 import { mgmtRouter } from './routes/mgmt';
@@ -55,21 +58,36 @@ app.use(cors({
     origin: '*', // Allow all for management access
     credentials: true
 }));
+app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 
-// Global request logging
-app.use((req, res, next) => {
-    console.log(`[HTTP] ${req.method} ${req.path}`);
-    next();
+// Global rate limit: 100 req/min per IP
+const globalLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' }
 });
+app.use(globalLimiter);
 
-// Routes
+// Stricter rate limit for client-facing endpoints (40 req/min)
+const clientLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 40,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' }
+});
+app.use('/api/mgmt/clients', clientLimiter);
+app.use('/api/mgmt/available-models', clientLimiter);
+app.use('/api/mgmt/provider-labels', clientLimiter);
+app.use('/api/auth/token', clientLimiter);
+
 app.use('/api/auth', authRouter);
-app.use('/api/ai', aiRouter);
-app.use('/api/ai', analyzeRouter);
+app.use('/api/auth', authTokenRouter);
 app.use('/api/mgmt', mgmtRouter);
-app.use('/api/logs', logsRouter);
 
 app.get('/health', (req: Request, res: Response) => {
     const status = getConnectionStatus();

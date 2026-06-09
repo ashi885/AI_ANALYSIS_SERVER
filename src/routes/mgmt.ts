@@ -20,6 +20,9 @@ import {
 } from '../db-mgmt';
 import { getLicenseFromCache, refreshLicenseInCache, invalidateLicenseInCache, getLicenseCacheDetails } from '../license-cache';
 import { processAiJob } from '../lib/ai/job-processor';
+import { requireAdminAuth, requireClientAuth } from '../middleware/auth';
+import { verifyToken } from '../jwt-utils';
+import { getClientIp, checkIpAccess } from '../utils/ip-utils';
 
 export { logApiRequest, getClientApiKey } from '../db-mgmt';
 
@@ -52,63 +55,37 @@ function decrypt(text: string): string {
 
 export const mgmtRouter = Router();
 
-// Auth middleware for mgmt routes - Supports Admin session OR Client API Key
-const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
-    // 1. Check for X-Client-API-Key first (Internal Client calls)
-    const apiKey = req.header('X-Client-API-Key');
-    if (apiKey) {
-        try {
-            const db = getDatabase();
-            const client = db.prepare('SELECT id, name FROM clients WHERE api_key = ?').get(apiKey) as any;
-            if (client) {
-                (req as any).client = client;
-                return next();
-            }
-        } catch (e) {
-            console.error('[Mgmt Auth] API Key validation failed:', e);
-        }
-    }
-
-    // 2. Check for session cookie (Admin Portal)
-    const sessionCookie = req.cookies?.cuepoint_session;
-    if (sessionCookie) {
-        try {
-            const session = typeof sessionCookie === 'string' ? JSON.parse(sessionCookie) : sessionCookie;
-            if (session.username && session.role) {
-                (req as any).adminUser = session;
-                return next();
-            }
-        } catch (e) {
-            console.log('[Mgmt Auth] Failed to parse session cookie:', e);
-        }
-    }
-
-    // 3. Fall back to Basic Auth (Authorization header)
-    const authHeader = req.headers.authorization;
-    if (authHeader) {
-        try {
-            const auth = authHeader.split(' ')[1];
-            if (auth) {
-                const decoded = Buffer.from(auth, 'base64').toString();
-                const [username, password] = decoded.split(':');
-                const db = getDatabase();
-                const user = db.prepare('SELECT * FROM admin_users WHERE username = ? AND password = ?').get(username, password) as any;
-                if (user) {
-                    (req as any).adminUser = user;
-                    return next();
-                }
-            }
-        } catch (err: any) {
-            console.error('[Mgmt Auth] Authorization header check failed:', err.message);
-        }
-    }
-
-    return res.status(401).json({ error: 'Authorization required' });
-};
-
-// Aliases for readability if needed
-const requireAdminAuth = requireAuth;
+// Re-export shared auth middleware for backward compatibility
 export { requireAdminAuth };
+
+/**
+ * Read the API key from request, preferring X-Client-API-Key header
+ * over the deprecated ?apiKey= query parameter, or extract from JWT Bearer token.
+ */
+function getClientApiKey(req: Request): string | undefined {
+    const headerKey = req.header('X-Client-API-Key');
+    if (headerKey) return headerKey;
+    const queryKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+    if (queryKey) {
+        console.warn('[DEPRECATED] ?apiKey= query param is deprecated. Use X-Client-API-Key header.');
+        return queryKey;
+    }
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+        const payload = verifyToken(authHeader.slice(7));
+        if (payload) {
+            const db = getDatabase();
+            const client = db.prepare('SELECT api_key, allowed_ips, blocked_ips FROM clients WHERE id = ?').get(payload.sub) as { api_key: string; allowed_ips: string | null; blocked_ips: string | null } | undefined;
+            if (client) {
+                const ip = getClientIp(req);
+                const result = checkIpAccess(ip, client.allowed_ips, client.blocked_ips);
+                if (!result.allowed) return undefined;
+                return client.api_key;
+            }
+        }
+    }
+    return undefined;
+}
 
 // Balance alerts for dashboard notification - staff only
 mgmtRouter.get('/status/balance-alerts', requireAdminAuth, async (req: Request, res: Response) => {
@@ -208,7 +185,8 @@ mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
             contract_start, contract_end, setup_fee, plan, 
             module_rates, billing_type, credits, description,
             provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
-            allow_rate_card_fetch
+            allow_rate_card_fetch, maintenance_mode,
+            allowed_ips, blocked_ips
         } = req.body;
         if (!name) return res.status(400).json({ error: 'Client name is required' });
 
@@ -226,15 +204,18 @@ mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
                 contract_start, contract_end, setup_fee, plan, status, 
                 module_rates, billing_type, credits, short_code, description,
                 provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
-                allow_rate_card_fetch
+                allow_rate_card_fetch, maintenance_mode,
+            allowed_ips, blocked_ips
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
             clientUuid, name, apiKey, billing_margin_flat || 0.50, billing_margin_percent || 20.0, 
             contract_start || today, contract_end || null, setup_fee || 0, plan || 'Professional', 
             moduleRatesStr, billing_type || 'PER_REQUEST', credits || 0, shortCode, description || null,
             provider_bal_openai || 0, provider_bal_openrouter || 0, provider_warn_threshold || 25.0,
-            allow_rate_card_fetch ? 1 : 0
+            allow_rate_card_fetch ? 1 : 0,
+            maintenance_mode || 0,
+            allowed_ips || null, blocked_ips || null
         );
 
         const newClient = db.prepare('SELECT * FROM clients WHERE id = ?').get(result.lastInsertRowid) as any;
@@ -250,53 +231,76 @@ mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
 
 mgmtRouter.put('/clients/:id', requireAdminAuth, async (req: Request, res: Response) => {
     try {
-        const { 
-            name, billing_margin_flat, billing_margin_percent, 
-            contract_start, contract_end, setup_fee, plan, status, 
-            module_rates, billing_type, credits, short_code, description,
-            provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
-            allow_rate_card_fetch
-        } = req.body;
         const clientId = parseInt(String(req.params.id));
-        
-        const moduleRatesStr = module_rates ? JSON.stringify(module_rates) : null;
-        
+        const body = req.body;
         const db = getDatabase();
-        db.prepare(`
-            UPDATE clients SET 
-                name = ?, billing_margin_flat = ?, billing_margin_percent = ?,
-                contract_start = ?, contract_end = ?, setup_fee = ?, plan = ?,
-                status = ?, module_rates = ?, billing_type = ?, credits = ?, 
-                short_code = ?, description = ?, 
-                provider_bal_openai = ?, provider_bal_openrouter = ?, provider_warn_threshold = ?,
-                allow_rate_card_fetch = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        `).run(
-            name, billing_margin_flat, billing_margin_percent, 
-            contract_start, contract_end || null, setup_fee, plan, 
-            status, moduleRatesStr, billing_type, credits, 
-            short_code, description,
-            provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
-            allow_rate_card_fetch ? 1 : 0,
-            clientId
-        );
 
-        // Auto-sync module_rates → module_pricing so getModulePricing() always returns correct rates
-        if (module_rates && typeof module_rates === 'object') {
+        const FIELD_MAP: Record<string, string> = {
+            name: 'name = ?',
+            billing_margin_flat: 'billing_margin_flat = ?',
+            billing_margin_percent: 'billing_margin_percent = ?',
+            contract_start: 'contract_start = ?',
+            contract_end: 'contract_end = ?',
+            setup_fee: 'setup_fee = ?',
+            plan: 'plan = ?',
+            status: 'status = ?',
+            module_rates: 'module_rates = ?',
+            billing_type: 'billing_type = ?',
+            credits: 'credits = ?',
+            short_code: 'short_code = ?',
+            description: 'description = ?',
+            provider_bal_openai: 'provider_bal_openai = ?',
+            provider_bal_openrouter: 'provider_bal_openrouter = ?',
+            provider_warn_threshold: 'provider_warn_threshold = ?',
+            allow_rate_card_fetch: 'allow_rate_card_fetch = ?',
+            maintenance_mode: 'maintenance_mode = ?',
+            allowed_ips: 'allowed_ips = ?',
+            blocked_ips: 'blocked_ips = ?',
+        };
+
+        const FIELD_VALUE_MAP: Record<string, (v: any) => any> = {
+            module_rates: (v) => (v ? JSON.stringify(v) : null),
+            allow_rate_card_fetch: (v) => (v ? 1 : 0),
+            maintenance_mode: (v) => (v || 0),
+            contract_end: (v) => (v || null),
+            allowed_ips: (v) => (v || null),
+            blocked_ips: (v) => (v || null),
+        };
+
+        const sets: string[] = [];
+        const values: any[] = [];
+
+        for (const [key, col] of Object.entries(FIELD_MAP)) {
+            if (body[key] !== undefined) {
+                sets.push(col);
+                const transform = FIELD_VALUE_MAP[key];
+                values.push(transform ? transform(body[key]) : body[key]);
+            }
+        }
+
+        if (sets.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+
+        sets.push('updated_at = CURRENT_TIMESTAMP');
+        values.push(clientId);
+
+        db.prepare(`UPDATE clients SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+
+        // Auto-sync module_rates → module_pricing
+        if (body.module_rates && typeof body.module_rates === 'object') {
             const today = new Date().toISOString().split('T')[0];
             const upsert = db.prepare(`
                 INSERT INTO module_pricing (client_id, module_name, cost_per_job, effective_from)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(client_id, module_name, effective_from) DO UPDATE SET cost_per_job = excluded.cost_per_job
             `);
-            for (const [moduleName, rateInfo] of Object.entries(module_rates as Record<string, any>)) {
+            for (const [moduleName, rateInfo] of Object.entries(body.module_rates as Record<string, any>)) {
                 const cost = typeof rateInfo === 'object' ? rateInfo.cost_per_job : rateInfo;
                 if (cost !== undefined && cost !== null) {
                     upsert.run(clientId, moduleName, Number(cost), today);
                 }
             }
-            logger.info('SYSTEM', 'MODULE_PRICING_SYNCED', `Synced ${Object.keys(module_rates).length} module rates to pricing table for client ${clientId}`);
         }
 
         const updatedClient = db.prepare('SELECT api_key FROM clients WHERE id = ?').get(clientId) as any;
@@ -304,7 +308,7 @@ mgmtRouter.put('/clients/:id', requireAdminAuth, async (req: Request, res: Respo
             invalidateLicenseInCache(updatedClient.api_key);
         }
 
-        logger.info('SYSTEM', 'CLIENT_UPDATED', `Client ${name} updated`, { clientId, status, plan });
+        logger.info('SYSTEM', 'CLIENT_UPDATED', `Client ${clientId} updated`, { fields: Object.keys(body) });
         res.json({ success: true });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -717,7 +721,7 @@ mgmtRouter.post('/clients/:id/promote-to-example', requireAdminAuth, async (req:
 
 mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         console.log(`[MgmtConfig] Request received. API Key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'MISSING'}`);
         
         if (!apiKey) {
@@ -727,6 +731,8 @@ mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
 
         const cached = getLicenseFromCache(apiKey);
         const today = new Date().toISOString().split('T')[0];
+        
+        const globalMaintenanceMode = parseInt(getSystemSetting('global_maintenance_mode') || '0');
 
         if (cached) {
             console.log(`[MgmtConfig] Serving from cache for client: ${cached.name}. allowRateCardFetch: ${!!(cached as any).allowRateCardFetch}`);
@@ -752,6 +758,7 @@ mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
                 moduleRates: (cached as any).allowRateCardFetch ? (cached as any).moduleRates : null,
                 allowRateCardFetch: !!(cached as any).allowRateCardFetch,
                 maintenance_mode: (cached as any).maintenance_mode ?? 0,
+                global_maintenance_mode: globalMaintenanceMode,
                 _cached: true
             });
         }
@@ -788,7 +795,8 @@ mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
             timezone: client.timezone || 'UTC',
             moduleRates: client.allow_rate_card_fetch ? (typeof client.module_rates === 'string' ? JSON.parse(client.module_rates) : client.module_rates) : null,
             allowRateCardFetch: !!client.allow_rate_card_fetch,
-            maintenance_mode: client.maintenance_mode ?? 0
+            maintenance_mode: client.maintenance_mode ?? 0,
+            global_maintenance_mode: globalMaintenanceMode
         });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -798,7 +806,7 @@ mgmtRouter.get('/clients/config', async (req: Request, res: Response) => {
 // Get client credentials (separate endpoint for fetching sensitive data)
 mgmtRouter.get('/clients/credentials', async (req: Request, res: Response) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey) return res.status(400).json({ error: 'API key required' });
 
         // Get client from license key - use SQLite
@@ -897,7 +905,7 @@ mgmtRouter.get('/clients/credentials', async (req: Request, res: Response) => {
 // Get module pricing for a client
 mgmtRouter.get('/clients/pricing', async (req: Request, res: Response) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey) return res.status(400).json({ error: 'API key required' });
 
         let clientId: number | null = null;
@@ -933,7 +941,7 @@ mgmtRouter.get('/clients/pricing', async (req: Request, res: Response) => {
 // Lightweight license validation - just checks if key is valid/active (no full config)
 mgmtRouter.get('/clients/validate', async (req: Request, res: Response) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey) return res.status(400).json({ valid: false, error: 'API key required' });
 
         const cached = getLicenseFromCache(apiKey);
@@ -994,7 +1002,7 @@ mgmtRouter.get('/logs/stats', requireAdminAuth, async (req: Request, res: Respon
 
 // ===== Available Models =====
 
-mgmtRouter.get('/available-models', async (req: Request, res: Response) => {
+mgmtRouter.get('/available-models', requireClientAuth, async (req: Request, res: Response) => {
     const models = await getAvailableModels();
     res.json(models);
 });
@@ -1036,6 +1044,15 @@ mgmtRouter.get('/provider-billing', requireAdminAuth, async (req: Request, res: 
         console.error('[Billing] Failed to fetch provider billing:', error);
         res.status(500).json({ error: 'Failed to fetch provider billing' });
     }
+});
+
+/**
+ * GET /api/mgmt/my-ip
+ * Returns the client's IP address as seen by the server.
+ * Used by the management UI "Add My IP" button.
+ */
+mgmtRouter.get('/my-ip', requireAdminAuth, (req: Request, res: Response) => {
+    res.json({ ip: getClientIp(req) });
 });
 
 /**
@@ -1109,7 +1126,7 @@ mgmtRouter.delete('/available-models/:id', requireAdminAuth, async (req: Request
 
 // ===== Provider Labels =====
 
-mgmtRouter.get('/provider-labels', async (req: Request, res: Response) => {
+mgmtRouter.get('/provider-labels', requireClientAuth, async (req: Request, res: Response) => {
     const labels = await getProviderLabels();
     res.json(labels);
 });
@@ -1122,7 +1139,7 @@ mgmtRouter.put('/provider-labels/:provider', requireAdminAuth, async (req: Reque
 // ===== Watcher Heartbeat =====
 mgmtRouter.post('/clients/heartbeat', async (req: Request, res: Response) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey) return res.status(400).json({ error: 'API key required' });
 
         const db = getDatabase();
@@ -1176,7 +1193,7 @@ mgmtRouter.get('/client-usage-logs', requireAdminAuth, async (req: Request, res:
 
 mgmtRouter.post('/clients/usage', async (req: Request, res: Response) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey) return res.status(400).json({ error: 'API key required' });
 
         // Get client from license key - use SQLite
@@ -1782,7 +1799,7 @@ mgmtRouter.post('/ai-queue/:id/free', requireAdminAuth, async (req: Request, res
 
 
 // Retry a failed or partial ai_job (Enhanced for surgical retries)
-mgmtRouter.post('/ai-queue/:id/retry', requireAuth, async (req: Request, res: Response) => {
+mgmtRouter.post('/ai-queue/:id/retry', requireAdminAuth, async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const { targetModules, targetLanguages } = req.body;
@@ -1879,7 +1896,7 @@ mgmtRouter.post('/ai-queue/:id/retry', requireAuth, async (req: Request, res: Re
  * Universal Export Result Endpoint
  * Handles subtitles, ad_breaks, promo_breaks, metadata
  */
-mgmtRouter.post('/jobs/:id/export-result', requireAuth, async (req: Request, res: Response) => {
+mgmtRouter.post('/jobs/:id/export-result', requireAdminAuth, async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const { moduleName, data } = req.body;
@@ -1915,7 +1932,7 @@ mgmtRouter.post('/jobs/:id/export-result', requireAuth, async (req: Request, res
  * Universal Download Result Endpoint
  * returns raw content for browser download
  */
-mgmtRouter.post('/jobs/:id/download-result', requireAuth, async (req: Request, res: Response) => {
+mgmtRouter.post('/jobs/:id/download-result', requireAdminAuth, async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const { moduleName, data } = req.body;
@@ -1955,6 +1972,72 @@ mgmtRouter.post('/settings/global-fallback', requireAdminAuth, async (req: Reque
         const { setGlobalDefaultModel } = await import('../db-mgmt');
         await setGlobalDefaultModel(model);
         res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ===== Queue Pause & Maintenance API =====
+
+mgmtRouter.get('/ai-queue/status', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const db = getDatabase();
+        const { getSystemSetting } = await import('../db-mgmt');
+        const globalQueuePaused = parseInt(getSystemSetting('global_queue_paused') || '0');
+        const globalMaintenanceMode = parseInt(getSystemSetting('global_maintenance_mode') || '0');
+        
+        // Count active/pending grouped by client
+        const clientsWithJobs = db.prepare(`
+            SELECT c.id, c.name, c.queue_paused, c.maintenance_mode,
+                SUM(CASE WHEN q.status = 'processing' THEN 1 ELSE 0 END) as active_count,
+                SUM(CASE WHEN q.status = 'pending' THEN 1 ELSE 0 END) as pending_count
+            FROM clients c
+            LEFT JOIN ai_jobs q ON q.client_id = c.id AND q.queue_status IN ('pending', 'processing')
+            GROUP BY c.id
+        `).all() as any[];
+
+        res.json({
+            globalQueuePaused,
+            globalMaintenanceMode,
+            clients: clientsWithJobs
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.post('/queue/pause/global', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const { getSystemSetting, setSystemSetting } = await import('../db-mgmt');
+        const current = parseInt(getSystemSetting('global_queue_paused') || '0');
+        await setSystemSetting('global_queue_paused', current ? '0' : '1');
+        res.json({ success: true, paused: !current });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.post('/maintenance/global', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const { getSystemSetting, setSystemSetting } = await import('../db-mgmt');
+        const current = parseInt(getSystemSetting('global_maintenance_mode') || '0');
+        await setSystemSetting('global_maintenance_mode', current ? '0' : '1');
+        res.json({ success: true, enabled: !current });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.post('/queue/pause/client/:id', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const clientId = parseInt(String(req.params.id));
+        const db = getDatabase();
+        const client = db.prepare('SELECT queue_paused FROM clients WHERE id = ?').get(clientId) as any;
+        if (!client) return res.status(404).json({ error: 'Client not found' });
+        
+        const newStatus = client.queue_paused ? 0 : 1;
+        db.prepare('UPDATE clients SET queue_paused = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStatus, clientId);
+        res.json({ success: true, paused: !!newStatus });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }

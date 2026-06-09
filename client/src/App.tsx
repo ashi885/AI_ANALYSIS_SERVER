@@ -118,6 +118,7 @@ interface Client {
     description?: string;
     short_code?: string;
     allow_rate_card_fetch?: number;
+    queue_paused?: number;
 }
 
 interface SummaryData {
@@ -473,6 +474,22 @@ function App() {
         } catch (err) { console.error(err); }
     };
 
+    const handleGenerateCredential = async (clientId: number, description: string) => {
+        const res = await authFetch('/api/auth/token/credentials/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ clientId, description })
+        });
+        if (!res.ok) throw new Error('Failed to generate credentials');
+        return res.json();
+    };
+
+    const handleRevokeCredential = async (credentialId: number) => {
+        if (!confirm('Revoke these credentials? All active tokens will be invalidated immediately.')) return;
+        const res = await authFetch(`/api/auth/token/credentials/${credentialId}/revoke`, { method: 'POST' });
+        if (!res.ok) throw new Error('Failed to revoke credentials');
+    };
+
     const handleSaveCredentials = async (clientId: number, credentials: any) => {
         const res = await authFetch(`/api/mgmt/clients/${clientId}/credentials`, {
             method: 'POST',
@@ -670,7 +687,7 @@ function App() {
                     {activeTab === 'sync-queue' && <SyncQueueView authFetch={authFetch} />}
                 </div>
             </main>
-            {showModal && <ClientModal client={editingClient} authFetch={authFetch} onClose={() => setShowModal(false)} onSave={handleSaveClient} saving={savingClient} />}
+            {showModal && <ClientModal client={editingClient} authFetch={authFetch} onClose={() => setShowModal(false)} onSave={handleSaveClient} saving={savingClient} onGenerateCredential={handleGenerateCredential} onRevokeCredential={handleRevokeCredential} />}
         </div>
     );
 }
@@ -2449,7 +2466,7 @@ function TieredPricingCard({ title, value, onChange }: { title: string, value: a
 }
 
 
-function ClientModal({ client, authFetch, onClose, onSave, saving }: { client: Client | null; authFetch: (url: string, options?: RequestInit) => Promise<Response>; onClose: () => void; onSave: (data: any) => void; saving: boolean }) {
+function ClientModal({ client, authFetch, onClose, onSave, saving, onGenerateCredential, onRevokeCredential }: { client: Client | null; authFetch: (url: string, options?: RequestInit) => Promise<Response>; onClose: () => void; onSave: (data: any) => void; saving: boolean; onGenerateCredential: (clientId: number, description: string) => Promise<any>; onRevokeCredential: (credentialId: number) => Promise<void> }) {
     const today = new Date().toISOString().split('T')[0];
     const nextYear = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
@@ -2483,6 +2500,44 @@ function ClientModal({ client, authFetch, onClose, onSave, saving }: { client: C
             setFormData(prev => ({ ...prev, short_code: prev.name.substring(0, 3).toUpperCase() }));
         }
     }, [formData.name, formData.short_code]);
+
+    const [credentials, setCredentials] = useState<any[]>([]);
+    const [generatedCred, setGeneratedCred] = useState<any>(null);
+    const [showGenerateForm, setShowGenerateForm] = useState(false);
+    const [credDescription, setCredDescription] = useState('');
+
+    useEffect(() => {
+        if (client?.id) {
+            authFetch(`/api/auth/token/credentials?clientId=${client.id}`)
+                .then(r => r.ok ? r.json() : [])
+                .then(setCredentials)
+                .catch(() => setCredentials([]));
+        }
+    }, [client?.id]);
+
+    const handleGenerate = async () => {
+        if (!client?.id) return;
+        try {
+            const result = await onGenerateCredential(client.id, credDescription || 'API Credentials');
+            setGeneratedCred(result);
+            setShowGenerateForm(false);
+            setCredDescription('');
+            const creds = await authFetch(`/api/auth/token/credentials?clientId=${client.id}`).then(r => r.ok ? r.json() : []);
+            setCredentials(creds);
+        } catch (err) {
+            console.error('Failed to generate credentials:', err);
+        }
+    };
+
+    const handleRevoke = async (credId: number) => {
+        try {
+            await onRevokeCredential(credId);
+            const creds = await authFetch(`/api/auth/token/credentials?clientId=${client.id}`).then(r => r.ok ? r.json() : []);
+            setCredentials(creds);
+        } catch (err) {
+            console.error('Failed to revoke credentials:', err);
+        }
+    };
 
     return (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
@@ -2680,6 +2735,53 @@ function ClientModal({ client, authFetch, onClose, onSave, saving }: { client: C
                     </div>
                 </div>
 
+                {client && (
+                    <div style={{ marginBottom: '20px', padding: '16px', backgroundColor: 'rgba(99,102,241,0.08)', borderRadius: '8px', border: '1px solid rgba(99,102,241,0.2)' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 600, color: '#818cf8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🔑 JWT API Credentials</div>
+
+                        {generatedCred && (
+                            <div style={{ marginBottom: '12px', padding: '12px', backgroundColor: 'rgba(16,185,129,0.15)', borderRadius: '8px', border: '1px solid rgba(16,185,129,0.3)' }}>
+                                <div style={{ fontSize: '13px', fontWeight: 600, color: '#10b981', marginBottom: '8px' }}>✅ Credentials Generated — Save these now!</div>
+                                <div style={{ fontSize: '12px', marginBottom: '4px' }}><strong>Client ID:</strong> <code style={{ wordBreak: 'break-all' }}>{generatedCred.client_id}</code></div>
+                                <div style={{ fontSize: '12px', marginBottom: '4px' }}><strong>Client Secret:</strong> <code style={{ wordBreak: 'break-all' }}>{generatedCred.client_secret}</code></div>
+                                <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '6px' }}>⚠️ {generatedCred.warning}</div>
+                                <button onClick={() => setGeneratedCred(null)} style={{ ...styles.buttonSecondary, padding: '6px 12px', fontSize: '11px', marginTop: '8px' }}>Dismiss</button>
+                            </div>
+                        )}
+
+                        {credentials.filter(c => c.is_active).length > 0 && (
+                            <div style={{ marginBottom: '10px' }}>
+                                <div style={{ fontSize: '12px', fontWeight: 500, color: '#9ca3af', marginBottom: '8px' }}>Active Credentials</div>
+                                {credentials.filter(c => c.is_active).map(c => (
+                                    <div key={c.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '6px', marginBottom: '6px' }}>
+                                        <div>
+                                            <div style={{ fontSize: '12px', fontWeight: 500 }}>{c.description}</div>
+                                            <div style={{ fontSize: '11px', color: '#6b7280' }}>{c.credential_id.substring(0, 16)}... · {c.last_used_at ? `Last used ${new Date(c.last_used_at).toLocaleDateString()}` : 'Never used'} · Created {new Date(c.created_at).toLocaleDateString()}</div>
+                                        </div>
+                                        <button onClick={() => handleRevoke(c.id)} style={{ padding: '4px 10px', fontSize: '11px', backgroundColor: 'rgba(239,68,68,0.2)', color: '#ef4444', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Revoke</button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {!showGenerateForm ? (
+                            <button onClick={() => setShowGenerateForm(true)} style={{ ...styles.buttonSecondary, padding: '8px 14px', fontSize: '12px' }}>+ Generate New Credentials</button>
+                        ) : (
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <input
+                                    type="text"
+                                    value={credDescription}
+                                    onChange={e => setCredDescription(e.target.value)}
+                                    placeholder="Description (e.g. Production)"
+                                    style={{ ...styles.input, flex: 1, fontSize: '12px' }}
+                                />
+                                <button onClick={handleGenerate} style={{ ...styles.button, padding: '8px 14px', fontSize: '12px' }}>Generate</button>
+                                <button onClick={() => setShowGenerateForm(false)} style={{ ...styles.buttonSecondary, padding: '8px 14px', fontSize: '12px' }}>Cancel</button>
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 <div style={{ marginBottom: '20px', padding: '16px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
                     <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '16px' }}>Module Pricing setting</label>
                     
@@ -2776,6 +2878,10 @@ function ConfigView({
     const [aiSettingsSaving, setAiSettingsSaving] = useState(false);
     const [aiSettingsMessage, setAiSettingsMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
     const [balanceAlerts, setBalanceAlerts] = useState<any[]>([]);
+    const [allowedIps, setAllowedIps] = useState('');
+    const [blockedIps, setBlockedIps] = useState('');
+    const [ipSaving, setIpSaving] = useState(false);
+    const [ipMessage, setIpMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
     const fetchAiSettings = async (clientId: number) => {
         setAiSettingsLoading(true);
@@ -2837,6 +2943,39 @@ function ConfigView({
         }
     };
 
+    const handleSaveIpRules = async () => {
+        if (!selectedClient) return;
+        setIpSaving(true);
+        setIpMessage(null);
+        try {
+            const res = await authFetch(`/api/mgmt/clients/${selectedClient}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    allowed_ips: allowedIps.trim() || null,
+                    blocked_ips: blockedIps.trim() || null
+                })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                setIpMessage({ type: 'success', text: 'IP access rules saved!' });
+                if (client) {
+                    (client as any).allowed_ips = allowedIps.trim() || null;
+                    (client as any).blocked_ips = blockedIps.trim() || null;
+                }
+                onRefresh();
+                setTimeout(() => setIpMessage(null), 3000);
+            } else {
+                setIpMessage({ type: 'error', text: data.error || 'Failed to save IP rules' });
+            }
+        } catch (err) {
+            setIpMessage({ type: 'error', text: 'Network error' });
+        } finally {
+            setIpSaving(false);
+        }
+    };
+
     const handleSaveCredentials = async () => {
         if (!credsForm.supabaseUrl || !credsForm.supabaseAnonKey) return;
         setCredsSaving(true);
@@ -2877,6 +3016,14 @@ function ConfigView({
     const clientModelSettings = clientModels[selectedClient] || [];
     const client = clients.find(c => c.id === selectedClient);
     const creds = clientCredentials[selectedClient] || { supabase_url: '', supabase_anon_key: '' };
+
+    useEffect(() => {
+        if (client) {
+            setAllowedIps((client as any).allowed_ips || '');
+            setBlockedIps((client as any).blocked_ips || '');
+            setIpMessage(null);
+        }
+    }, [client?.id, client?.allowed_ips, client?.blocked_ips]);
 
     // Get unique modules from available models
     const modules = [...new Set(availableModels.map((m: any) => m.module_id))];
@@ -3445,6 +3592,142 @@ function ConfigView({
                         ) : (
                             <div style={{ padding: '20px', textAlign: 'center', color: '#6b7280' }}>Select a client to manage strategy</div>
                         )}
+                    </div>
+
+                    {/* IP Access Control Section */}
+                    <div style={{ ...styles.card, marginTop: '20px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                            <h3 style={{ fontSize: '16px', fontWeight: 600 }}>🌐 IP Access Control</h3>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                                <button
+                                    onClick={async () => {
+                                        try {
+                                            const res = await authFetch('/api/mgmt/my-ip');
+                                            if (res.ok) {
+                                                const data = await res.json();
+                                                setAllowedIps(prev => {
+                                                    const existing = prev ? prev.split(',').map(s => s.trim()).filter(Boolean) : [];
+                                                    const exact = data.ip;
+                                                    if (!existing.includes(exact)) existing.push(exact);
+                                                    return existing.join(', ');
+                                                });
+                                            }
+                                        } catch {}
+                                    }}
+                                    style={{ ...styles.buttonSecondary, padding: '6px 12px', fontSize: '11px' }}
+                                    title="Add your current IP address to the allowed list"
+                                >
+                                    + Add My IP
+                                </button>
+                                <button
+                                    onClick={async () => {
+                                        try {
+                                            const res = await authFetch('/api/mgmt/my-ip');
+                                            if (res.ok) {
+                                                const data = await res.json();
+                                                const parts = data.ip.split('.');
+                                                const range = `${parts[0]}.${parts[1]}.${parts[2]}.*`;
+                                                setAllowedIps(prev => {
+                                                    const existing = prev ? prev.split(',').map(s => s.trim()).filter(Boolean) : [];
+                                                    if (!existing.includes(range)) existing.push(range);
+                                                    return existing.join(', ');
+                                                });
+                                            }
+                                        } catch {}
+                                    }}
+                                    style={{ ...styles.buttonSecondary, padding: '6px 12px', fontSize: '11px' }}
+                                    title="Add your /24 subnet range (covers your whole office network)"
+                                >
+                                    + Add My /24 Range
+                                </button>
+                            </div>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '16px' }}>
+                            <div>
+                                <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: '#10b981' }}>
+                                    Allowed IPs/CIDRs
+                                </label>
+                                <textarea
+                                    value={allowedIps}
+                                    onChange={(e) => setAllowedIps(e.target.value)}
+                                    placeholder="203.0.113.5, 203.0.113.0/24, 198.51.100.*"
+                                    style={{
+                                        ...styles.input,
+                                        width: '100%',
+                                        minHeight: '80px',
+                                        fontFamily: 'monospace',
+                                        fontSize: '12px',
+                                        lineHeight: '1.5',
+                                        backgroundColor: 'rgba(0,0,0,0.2)',
+                                        resize: 'vertical'
+                                    }}
+                                />
+                                <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '6px' }}>
+                                    Leave empty to allow all IPs (no restriction).
+                                </div>
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: '#ef4444' }}>
+                                    Blocked IPs/CIDRs
+                                </label>
+                                <textarea
+                                    value={blockedIps}
+                                    onChange={(e) => setBlockedIps(e.target.value)}
+                                    placeholder="10.0.0.0/8, 192.168.1.1"
+                                    style={{
+                                        ...styles.input,
+                                        width: '100%',
+                                        minHeight: '80px',
+                                        fontFamily: 'monospace',
+                                        fontSize: '12px',
+                                        lineHeight: '1.5',
+                                        backgroundColor: 'rgba(0,0,0,0.2)',
+                                        resize: 'vertical'
+                                    }}
+                                />
+                                <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '6px' }}>
+                                    Blocked rules are checked before allowed rules.
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style={{
+                            padding: '12px 16px',
+                            backgroundColor: 'rgba(59,130,246,0.08)',
+                            border: '1px solid rgba(59,130,246,0.2)',
+                            borderRadius: '8px',
+                            marginBottom: '16px'
+                        }}>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: '#60a5fa', marginBottom: '6px' }}>📖 Supported Formats</div>
+                            <div style={{ fontSize: '11px', color: '#9ca3af', lineHeight: '1.8', fontFamily: 'monospace' }}>
+                                203.0.113.5 —{' '}<span style={{ color: '#6b7280' }}>Single IP (add your workstation)</span><br />
+                                203.0.113.0/24 —{' '}<span style={{ color: '#6b7280' }}>CIDR range (entire office network)</span><br />
+                                203.0.113.* —{' '}<span style={{ color: '#6b7280' }}>Wildcard (same as /24, easier to type)</span><br />
+                                198.51.100.1, 203.0.113.* —{' '}<span style={{ color: '#6b7280' }}>Comma-separated (multiple entries)</span><br />
+                                10.0.0.0/8 —{' '}<span style={{ color: '#6b7280' }}>Large private range (block VPNs)</span>
+                            </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <button
+                                onClick={handleSaveIpRules}
+                                disabled={ipSaving}
+                                style={{ ...styles.button, padding: '8px 16px', fontSize: '12px', opacity: ipSaving ? 0.6 : 1 }}
+                            >
+                                {ipSaving ? 'Saving...' : '💾 Save IP Rules'}
+                            </button>
+                            {ipMessage && (
+                                <span style={{
+                                    fontSize: '12px',
+                                    fontWeight: 500,
+                                    color: ipMessage.type === 'success' ? '#10b981' : '#ef4444'
+                                }}>
+                                    {ipMessage.type === 'success' ? '✓ ' : '✗ '}
+                                    {ipMessage.text}
+                                </span>
+                            )}
+                        </div>
                     </div>
                 </div>
             ) : null}
@@ -4698,6 +4981,7 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
     const [selectedLog, setSelectedLog] = useState<any | null>(null);
     const [showProviderCosts, setShowProviderCosts] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
+    const [queueStatus, setQueueStatus] = useState<any>(null);
 
     const load = async () => {
         setLoading(true);
@@ -4708,12 +4992,14 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
             const url = query ? `/api/mgmt/ai-queue?limit=100&${query}` : `/api/mgmt/ai-queue?limit=100`;
             const statsUrl = clientParam ? `/api/mgmt/ai-queue/stats?${clientParam}` : '/api/mgmt/ai-queue/stats';
 
-            const [itemsRes, statsRes] = await Promise.all([
+            const [itemsRes, statsRes, statusRes] = await Promise.all([
                 authFetch(url),
-                authFetch(statsUrl)
+                authFetch(statsUrl),
+                authFetch('/api/mgmt/ai-queue/status')
             ]);
             if (itemsRes.ok) setItems(await itemsRes.json());
             if (statsRes.ok) setStats(await statsRes.json());
+            if (statusRes.ok) setQueueStatus(await statusRes.json());
         } catch (err) {
             console.error('Failed to load AI jobs', err);
         } finally {
@@ -4795,6 +5081,88 @@ function AiJobsView({ authFetch, clients }: { authFetch: (url: string, options?:
 
     return (
         <div>
+            {/* Queue Controls & Status */}
+            {queueStatus && (
+                <div style={{ ...styles.card, padding: '20px', marginBottom: '24px', backgroundColor: 'rgba(17, 24, 39, 0.8)', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                        <div>
+                            <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                🚦 AI Queue Controls
+                            </h3>
+                            <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '4px' }}>
+                                Global Limits: <strong>5</strong> concurrent jobs | Per-Client Limit: <strong>2</strong> concurrent jobs
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '12px' }}>
+                            <button
+                                onClick={async () => {
+                                    const res = await authFetch('/api/mgmt/queue/pause/global', { method: 'POST' });
+                                    if (res.ok) load();
+                                }}
+                                style={{
+                                    ...styles.button,
+                                    backgroundColor: queueStatus.globalQueuePaused ? '#ef4444' : '#10b981',
+                                    opacity: 0.9
+                                }}
+                            >
+                                {queueStatus.globalQueuePaused ? '▶️ Resume Global Queue' : '⏸️ Pause Global Queue'}
+                            </button>
+                            <button
+                                onClick={async () => {
+                                    const res = await authFetch('/api/mgmt/maintenance/global', { method: 'POST' });
+                                    if (res.ok) load();
+                                }}
+                                style={{
+                                    ...styles.button,
+                                    backgroundColor: queueStatus.globalMaintenanceMode ? '#ef4444' : '#6b7280',
+                                    opacity: 0.9
+                                }}
+                            >
+                                {queueStatus.globalMaintenanceMode ? '🔓 Disable Global Maintenance' : '🔒 Enable Global Maintenance'}
+                            </button>
+                        </div>
+                    </div>
+                    
+                    {queueStatus.clients?.length > 0 && (
+                        <div style={{ marginTop: '16px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 600, color: '#9ca3af', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                Active Client Queues
+                            </div>
+                            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                                {queueStatus.clients.map((c: any) => (
+                                    <div key={c.id} style={{
+                                        display: 'flex', alignItems: 'center', gap: '12px',
+                                        backgroundColor: c.queue_paused ? 'rgba(239, 68, 68, 0.1)' : 'rgba(255, 255, 255, 0.03)',
+                                        border: `1px solid ${c.queue_paused ? 'rgba(239, 68, 68, 0.3)' : 'rgba(255, 255, 255, 0.1)'}`,
+                                        padding: '8px 12px', borderRadius: '8px'
+                                    }}>
+                                        <div>
+                                            <div style={{ fontSize: '14px', fontWeight: 500, color: c.queue_paused ? '#ef4444' : '#e5e7eb' }}>{c.name}</div>
+                                            <div style={{ fontSize: '11px', color: '#9ca3af' }}>
+                                                {c.active_count || 0} active / {c.pending_count || 0} pending
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={async () => {
+                                                const res = await authFetch(`/api/mgmt/queue/pause/client/${c.id}`, { method: 'POST' });
+                                                if (res.ok) load();
+                                            }}
+                                            style={{
+                                                background: 'none', border: 'none', cursor: 'pointer', padding: '4px',
+                                                fontSize: '16px', opacity: 0.8, transition: 'opacity 0.2s'
+                                            }}
+                                            title={c.queue_paused ? "Resume Client Queue" : "Pause Client Queue"}
+                                        >
+                                            {c.queue_paused ? '▶️' : '⏸️'}
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
             {/* Stats Row */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '20px' }}>
                 {[

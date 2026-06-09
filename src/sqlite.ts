@@ -74,7 +74,10 @@ function createTables() {
             provider_bal_openai REAL DEFAULT 0,
             provider_bal_openrouter REAL DEFAULT 0,
             provider_warn_threshold REAL DEFAULT 25.0,
-            allow_rate_card_fetch INTEGER DEFAULT 0
+            allow_rate_card_fetch INTEGER DEFAULT 0,
+            queue_paused INTEGER DEFAULT 0,
+            allowed_ips TEXT,
+            blocked_ips TEXT
         );
 
         CREATE TABLE IF NOT EXISTS client_api_keys (
@@ -193,6 +196,19 @@ function createTables() {
         try {
             db.prepare("ALTER TABLE ai_jobs ADD COLUMN target_languages TEXT").run();
             console.log('[SQLite] MIGRATION SUCCESS: target_languages column added.');
+        } catch (err: any) {
+            console.error('[SQLite] MIGRATION FAILED:', err.message);
+        }
+    }
+
+    // Migration: Add queue_paused to clients table
+    const clientsInfo = db.prepare("PRAGMA table_info(clients)").all() as any[];
+    const hasQueuePaused = clientsInfo.some(col => col.name === 'queue_paused');
+    if (!hasQueuePaused) {
+        console.log('[SQLite] MIGRATION: Adding queue_paused column to clients table...');
+        try {
+            db.prepare("ALTER TABLE clients ADD COLUMN queue_paused INTEGER DEFAULT 0").run();
+            console.log('[SQLite] MIGRATION SUCCESS: queue_paused column added.');
         } catch (err: any) {
             console.error('[SQLite] MIGRATION FAILED:', err.message);
         }
@@ -323,6 +339,36 @@ function createTables() {
             FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS client_auth_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            credential_id TEXT UNIQUE NOT NULL,
+            credential_secret_hash TEXT NOT NULL,
+            description TEXT DEFAULT 'API Credentials',
+            is_active INTEGER DEFAULT 1,
+            last_used_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_client_auth_creds_client ON client_auth_credentials(client_id);
+
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            jti TEXT UNIQUE NOT NULL,
+            client_id INTEGER NOT NULL,
+            credential_id INTEGER,
+            token_type TEXT NOT NULL CHECK(token_type IN ('access', 'refresh')),
+            expires_at DATETIME NOT NULL,
+            revoked_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+            FOREIGN KEY (credential_id) REFERENCES client_auth_credentials(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_auth_tokens_jti ON auth_tokens(jti);
+        CREATE INDEX IF NOT EXISTS idx_auth_tokens_client ON auth_tokens(client_id, token_type);
+
         CREATE TABLE IF NOT EXISTS admin_users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
@@ -420,7 +466,9 @@ function createTables() {
         `ALTER TABLE client_usage_logs ADD COLUMN duration_seconds REAL DEFAULT 0`,
         `ALTER TABLE ai_jobs ADD COLUMN file_duration REAL DEFAULT 0`,
         `ALTER TABLE ai_jobs ADD COLUMN queue_status TEXT DEFAULT 'pending'`,
-        `ALTER TABLE ai_jobs ADD COLUMN priority INTEGER DEFAULT 0`
+        `ALTER TABLE ai_jobs ADD COLUMN priority INTEGER DEFAULT 0`,
+        `ALTER TABLE clients ADD COLUMN allowed_ips TEXT`,
+        `ALTER TABLE clients ADD COLUMN blocked_ips TEXT`
     ];
     for (const sql of migrations) {
         try { db.exec(sql); } catch (_) { /* column already exists */ }

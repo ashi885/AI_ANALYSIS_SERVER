@@ -94,8 +94,17 @@ async function processMainPipeline() {
             return acc;
         }, {} as Record<number, number>);
 
+        const { getSystemSetting } = await import('./db-mgmt');
+        const globalPaused = parseInt(getSystemSetting('global_queue_paused') || '0');
+        if (globalPaused) return;
+
         // 2. Get pending jobs, ordered by priority DESC, then oldest first
-        const pendingJobs = db.prepare(`SELECT * FROM ai_jobs WHERE queue_status = 'pending' ORDER BY priority DESC, created_at ASC`).all() as any[];
+        const pendingJobs = db.prepare(`
+            SELECT j.* FROM ai_jobs j
+            JOIN clients c ON j.client_id = c.id
+            WHERE j.queue_status = 'pending' AND COALESCE(c.queue_paused, 0) = 0
+            ORDER BY j.priority DESC, j.created_at ASC
+        `).all() as any[];
 
         for (const job of pendingJobs) {
             if (activeJobs.length >= MAX_GLOBAL_CONCURRENT) break;
@@ -169,7 +178,16 @@ async function processQueue() {
     if (isProcessing) return; // Prevent overlapping runs
     
     const db = getDatabase();
-    const nextJob = db.prepare(`SELECT * FROM ai_job_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1`).get() as any;
+    const { getSystemSetting } = await import('./db-mgmt');
+    const globalPaused = parseInt(getSystemSetting('global_queue_paused') || '0');
+    if (globalPaused) return;
+
+    const nextJob = db.prepare(`
+        SELECT q.* FROM ai_job_queue q
+        JOIN clients c ON q.client_id = c.id
+        WHERE q.status = 'pending' AND COALESCE(c.queue_paused, 0) = 0
+        ORDER BY q.created_at ASC LIMIT 1
+    `).get() as any;
     
     if (!nextJob) return;
     

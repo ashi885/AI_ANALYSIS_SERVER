@@ -1,7 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { logger, getLogsForDate, getAvailableLogDates, searchAllLogs, LogEntry } from '../logger';
+import { requireAdminAuth } from '../middleware/auth';
 
 export const logsRouter = Router();
+
+// All log endpoints require admin authentication
+logsRouter.use(requireAdminAuth);
 
 logsRouter.get('/search-all', (req: Request, res: Response) => {
     const level = req.query.level as string;
