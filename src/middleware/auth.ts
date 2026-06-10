@@ -116,3 +116,50 @@ export const requireClientAuth = async (req: Request, res: Response, next: NextF
 
     return res.status(401).json({ error: 'Client API Key or Bearer token required' });
 };
+
+export const requireAdminOrClientAuth = async (req: Request, res: Response, next: NextFunction) => {
+    const apiKey = req.header('X-Client-API-Key');
+    if (apiKey) {
+        const client = authenticateClient(apiKey);
+        if (client) {
+            if (!enforceIp(req, client.id, res)) return;
+            (req as any).client = client;
+            return next();
+        }
+    }
+
+    const sessionCookie = req.cookies?.cuepoint_session;
+    if (sessionCookie) {
+        const session = authenticateSession(sessionCookie);
+        if (session) {
+            (req as any).adminUser = session;
+            return next();
+        }
+    }
+
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+        if (authHeader.startsWith('Bearer ')) {
+            const token = authHeader.slice(7);
+            const payload = verifyToken(token);
+            if (payload) {
+                const db = getDatabase();
+                const client = db.prepare('SELECT id, name, status FROM clients WHERE id = ?').get(payload.sub) as any;
+                if (client && client.status === 'active') {
+                    if (!enforceIp(req, client.id, res)) return;
+                    (req as any).client = { id: client.id, name: client.name };
+                    (req as any).tokenPayload = payload;
+                    return next();
+                }
+            }
+        } else {
+            const user = authenticateBasic(authHeader);
+            if (user) {
+                (req as any).adminUser = user;
+                return next();
+            }
+        }
+    }
+
+    return res.status(401).json({ error: 'Authorization required' });
+};

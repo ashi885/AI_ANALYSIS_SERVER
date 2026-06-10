@@ -20,7 +20,7 @@ import {
 } from '../db-mgmt';
 import { getLicenseFromCache, refreshLicenseInCache, invalidateLicenseInCache, getLicenseCacheDetails } from '../license-cache';
 import { processAiJob } from '../lib/ai/job-processor';
-import { requireAdminAuth, requireClientAuth } from '../middleware/auth';
+import { requireAdminAuth, requireClientAuth, requireAdminOrClientAuth } from '../middleware/auth';
 import { verifyToken } from '../jwt-utils';
 import { getClientIp, checkIpAccess } from '../utils/ip-utils';
 
@@ -1002,7 +1002,7 @@ mgmtRouter.get('/logs/stats', requireAdminAuth, async (req: Request, res: Respon
 
 // ===== Available Models =====
 
-mgmtRouter.get('/available-models', requireClientAuth, async (req: Request, res: Response) => {
+mgmtRouter.get('/available-models', requireAdminOrClientAuth, async (req: Request, res: Response) => {
     const models = await getAvailableModels();
     res.json(models);
 });
@@ -1126,7 +1126,7 @@ mgmtRouter.delete('/available-models/:id', requireAdminAuth, async (req: Request
 
 // ===== Provider Labels =====
 
-mgmtRouter.get('/provider-labels', requireClientAuth, async (req: Request, res: Response) => {
+mgmtRouter.get('/provider-labels', requireAdminOrClientAuth, async (req: Request, res: Response) => {
     const labels = await getProviderLabels();
     res.json(labels);
 });
