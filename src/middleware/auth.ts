@@ -40,6 +40,7 @@ export const requireAdminAuth = async (req: Request, res: Response, next: NextFu
     if (apiKey) {
         const client = authenticateClient(apiKey);
         if (client) {
+            if (!enforceIp(req, client.id, res)) return;
             (req as any).client = client;
             return next();
         }
@@ -77,6 +78,7 @@ function enforceIp(req: Request, clientId: number, res: Response): boolean {
             const reason = result.blockingRule === 'blocked'
                 ? 'Access denied: your IP is blocked'
                 : 'Access denied: your IP is not in the allowed list';
+            res.locals.accessBlocked = reason;
             res.status(403).json({ error: reason, clientIp: ip });
             return false;
         }

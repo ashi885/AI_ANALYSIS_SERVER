@@ -15,18 +15,28 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.requireAdminAuth = exports.mgmtRouter = exports.getClientApiKey = exports.logApiRequest = void 0;
+exports.requireAdminAuth = exports.mgmtRouter = exports.logApiRequest = void 0;
 const express_1 = require("express");
 const supabase_1 = require("../supabase");
 const crypto_1 = __importDefault(require("crypto"));
@@ -37,6 +47,10 @@ const logger_1 = require("../logger");
 const db_mgmt_1 = require("../db-mgmt");
 const license_cache_1 = require("../license-cache");
 const job_processor_1 = require("../lib/ai/job-processor");
+const auth_1 = require("../middleware/auth");
+Object.defineProperty(exports, "requireAdminAuth", { enumerable: true, get: function () { return auth_1.requireAdminAuth; } });
+const jwt_utils_1 = require("../jwt-utils");
+const ip_utils_1 = require("../utils/ip-utils");
 var db_mgmt_2 = require("../db-mgmt");
 Object.defineProperty(exports, "logApiRequest", { enumerable: true, get: function () { return db_mgmt_2.logApiRequest; } });
 Object.defineProperty(exports, "getClientApiKey", { enumerable: true, get: function () { return db_mgmt_2.getClientApiKey; } });
@@ -67,65 +81,52 @@ function decrypt(text) {
     }
 }
 exports.mgmtRouter = (0, express_1.Router)();
-// Auth middleware for mgmt routes - Supports Admin session OR Client API Key
-const requireAuth = async (req, res, next) => {
-    var _a;
-    // 1. Check for X-Client-API-Key first (Internal Client calls)
-    const apiKey = req.header('X-Client-API-Key');
-    if (apiKey) {
-        try {
-            const db = (0, sqlite_1.getDatabase)();
-            const client = db.prepare('SELECT id, name FROM clients WHERE api_key = ?').get(apiKey);
-            if (client) {
-                req.client = client;
-                return next();
-            }
-        }
-        catch (e) {
-            console.error('[Mgmt Auth] API Key validation failed:', e);
+/**
+ * Read the API key from request, preferring X-Client-API-Key header
+ * over the deprecated ?apiKey= query parameter, or extract from JWT Bearer token.
+ */
+function getClientApiKey(req) {
+    const db = (0, sqlite_1.getDatabase)();
+    let rawKey;
+    const headerKey = req.header('X-Client-API-Key');
+    if (headerKey) {
+        rawKey = headerKey;
+    }
+    else {
+        const queryKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        if (queryKey) {
+            console.warn('[DEPRECATED] ?apiKey= query param is deprecated. Use X-Client-API-Key header.');
+            rawKey = queryKey;
         }
     }
-    // 2. Check for session cookie (Admin Portal)
-    const sessionCookie = (_a = req.cookies) === null || _a === void 0 ? void 0 : _a.cuepoint_session;
-    if (sessionCookie) {
-        try {
-            const session = typeof sessionCookie === 'string' ? JSON.parse(sessionCookie) : sessionCookie;
-            if (session.username && session.role) {
-                req.adminUser = session;
-                return next();
-            }
-        }
-        catch (e) {
-            console.log('[Mgmt Auth] Failed to parse session cookie:', e);
-        }
+    if (rawKey) {
+        const client = db.prepare('SELECT id, api_key, allowed_ips, blocked_ips FROM clients WHERE api_key = ?').get(rawKey);
+        if (!client)
+            return undefined;
+        const ip = (0, ip_utils_1.getClientIp)(req);
+        const result = (0, ip_utils_1.checkIpAccess)(ip, client.allowed_ips, client.blocked_ips);
+        if (!result.allowed)
+            return undefined;
+        return client.api_key;
     }
-    // 3. Fall back to Basic Auth (Authorization header)
     const authHeader = req.headers.authorization;
-    if (authHeader) {
-        try {
-            const auth = authHeader.split(' ')[1];
-            if (auth) {
-                const decoded = Buffer.from(auth, 'base64').toString();
-                const [username, password] = decoded.split(':');
-                const db = (0, sqlite_1.getDatabase)();
-                const user = db.prepare('SELECT * FROM admin_users WHERE username = ? AND password = ?').get(username, password);
-                if (user) {
-                    req.adminUser = user;
-                    return next();
-                }
+    if (authHeader === null || authHeader === void 0 ? void 0 : authHeader.startsWith('Bearer ')) {
+        const payload = (0, jwt_utils_1.verifyToken)(authHeader.slice(7));
+        if (payload) {
+            const client = db.prepare('SELECT api_key, allowed_ips, blocked_ips FROM clients WHERE id = ?').get(payload.sub);
+            if (client) {
+                const ip = (0, ip_utils_1.getClientIp)(req);
+                const result = (0, ip_utils_1.checkIpAccess)(ip, client.allowed_ips, client.blocked_ips);
+                if (!result.allowed)
+                    return undefined;
+                return client.api_key;
             }
         }
-        catch (err) {
-            console.error('[Mgmt Auth] Authorization header check failed:', err.message);
-        }
     }
-    return res.status(401).json({ error: 'Authorization required' });
-};
-// Aliases for readability if needed
-const requireAdminAuth = requireAuth;
-exports.requireAdminAuth = requireAdminAuth;
+    return undefined;
+}
 // Balance alerts for dashboard notification - staff only
-exports.mgmtRouter.get('/status/balance-alerts', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/status/balance-alerts', auth_1.requireAdminAuth, async (req, res) => {
     try {
         // Ensure only admin/staff can access this
         if (!req.adminUser) {
@@ -193,7 +194,7 @@ exports.mgmtRouter.post('/auth/login', async (req, res) => {
     }
 });
 // ===== Client Management =====
-exports.mgmtRouter.get('/clients', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/clients', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const db = (0, sqlite_1.getDatabase)();
         const clients = db.prepare('SELECT * FROM clients ORDER BY created_at DESC').all();
@@ -203,9 +204,9 @@ exports.mgmtRouter.get('/clients', requireAdminAuth, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/clients', auth_1.requireAdminAuth, async (req, res) => {
     try {
-        const { name, billing_margin_flat, billing_margin_percent, contract_start, contract_end, setup_fee, plan, module_rates, billing_type, credits, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold, allow_rate_card_fetch } = req.body;
+        const { name, billing_margin_flat, billing_margin_percent, contract_start, contract_end, setup_fee, plan, module_rates, billing_type, credits, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold, allow_rate_card_fetch, maintenance_mode, allowed_ips, blocked_ips } = req.body;
         if (!name)
             return res.status(400).json({ error: 'Client name is required' });
         const apiKey = `CUE-${crypto_1.default.randomBytes(12).toString('hex').toUpperCase()}`;
@@ -220,10 +221,11 @@ exports.mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
                 contract_start, contract_end, setup_fee, plan, status, 
                 module_rates, billing_type, credits, short_code, description,
                 provider_bal_openai, provider_bal_openrouter, provider_warn_threshold,
-                allow_rate_card_fetch
+                allow_rate_card_fetch, maintenance_mode,
+            allowed_ips, blocked_ips
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(clientUuid, name, apiKey, billing_margin_flat || 0.50, billing_margin_percent || 20.0, contract_start || today, contract_end || null, setup_fee || 0, plan || 'Professional', moduleRatesStr, billing_type || 'PER_REQUEST', credits || 0, shortCode, description || null, provider_bal_openai || 0, provider_bal_openrouter || 0, provider_warn_threshold || 25.0, allow_rate_card_fetch ? 1 : 0);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(clientUuid, name, apiKey, billing_margin_flat || 0.50, billing_margin_percent || 20.0, contract_start || today, contract_end || null, setup_fee || 0, plan || 'Professional', moduleRatesStr, billing_type || 'PER_REQUEST', credits || 0, shortCode, description || null, provider_bal_openai || 0, provider_bal_openrouter || 0, provider_warn_threshold || 25.0, allow_rate_card_fetch ? 1 : 0, maintenance_mode || 0, allowed_ips || null, blocked_ips || null);
         const newClient = db.prepare('SELECT * FROM clients WHERE id = ?').get(result.lastInsertRowid);
         if (newClient && typeof newClient.module_rates === 'string') {
             newClient.module_rates = JSON.parse(newClient.module_rates);
@@ -235,51 +237,89 @@ exports.mgmtRouter.post('/clients', requireAdminAuth, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.put('/clients/:id', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.put('/clients/:id', auth_1.requireAdminAuth, async (req, res) => {
     try {
-        const { name, billing_margin_flat, billing_margin_percent, contract_start, contract_end, setup_fee, plan, status, module_rates, billing_type, credits, short_code, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold, allow_rate_card_fetch } = req.body;
         const clientId = parseInt(String(req.params.id));
-        const moduleRatesStr = module_rates ? JSON.stringify(module_rates) : null;
+        const body = req.body;
         const db = (0, sqlite_1.getDatabase)();
-        db.prepare(`
-            UPDATE clients SET 
-                name = ?, billing_margin_flat = ?, billing_margin_percent = ?,
-                contract_start = ?, contract_end = ?, setup_fee = ?, plan = ?,
-                status = ?, module_rates = ?, billing_type = ?, credits = ?, 
-                short_code = ?, description = ?, 
-                provider_bal_openai = ?, provider_bal_openrouter = ?, provider_warn_threshold = ?,
-                allow_rate_card_fetch = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        `).run(name, billing_margin_flat, billing_margin_percent, contract_start, contract_end || null, setup_fee, plan, status, moduleRatesStr, billing_type, credits, short_code, description, provider_bal_openai, provider_bal_openrouter, provider_warn_threshold, allow_rate_card_fetch ? 1 : 0, clientId);
-        // Auto-sync module_rates → module_pricing so getModulePricing() always returns correct rates
-        if (module_rates && typeof module_rates === 'object') {
+        const FIELD_MAP = {
+            name: 'name = ?',
+            billing_margin_flat: 'billing_margin_flat = ?',
+            billing_margin_percent: 'billing_margin_percent = ?',
+            contract_start: 'contract_start = ?',
+            contract_end: 'contract_end = ?',
+            setup_fee: 'setup_fee = ?',
+            plan: 'plan = ?',
+            status: 'status = ?',
+            module_rates: 'module_rates = ?',
+            billing_type: 'billing_type = ?',
+            credits: 'credits = ?',
+            short_code: 'short_code = ?',
+            description: 'description = ?',
+            provider_bal_openai: 'provider_bal_openai = ?',
+            provider_bal_openrouter: 'provider_bal_openrouter = ?',
+            provider_warn_threshold: 'provider_warn_threshold = ?',
+            allow_rate_card_fetch: 'allow_rate_card_fetch = ?',
+            maintenance_mode: 'maintenance_mode = ?',
+            allowed_ips: 'allowed_ips = ?',
+            blocked_ips: 'blocked_ips = ?',
+            dev_mode: 'dev_mode = ?',
+            dev_mode_delay_ms: 'dev_mode_delay_ms = ?',
+            dev_record_billing: 'dev_record_billing = ?',
+        };
+        const FIELD_VALUE_MAP = {
+            module_rates: (v) => (v ? JSON.stringify(v) : null),
+            allow_rate_card_fetch: (v) => (v ? 1 : 0),
+            maintenance_mode: (v) => (v || 0),
+            contract_end: (v) => (v || null),
+            allowed_ips: (v) => (v || null),
+            blocked_ips: (v) => (v || null),
+            dev_mode: (v) => (v ? 1 : 0),
+            dev_mode_delay_ms: (v) => (parseInt(v) || 5000),
+            dev_record_billing: (v) => (v ? 1 : 0),
+        };
+        const sets = [];
+        const values = [];
+        for (const [key, col] of Object.entries(FIELD_MAP)) {
+            if (body[key] !== undefined) {
+                sets.push(col);
+                const transform = FIELD_VALUE_MAP[key];
+                values.push(transform ? transform(body[key]) : body[key]);
+            }
+        }
+        if (sets.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+        sets.push('updated_at = CURRENT_TIMESTAMP');
+        values.push(clientId);
+        db.prepare(`UPDATE clients SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+        // Auto-sync module_rates → module_pricing
+        if (body.module_rates && typeof body.module_rates === 'object') {
             const today = new Date().toISOString().split('T')[0];
             const upsert = db.prepare(`
                 INSERT INTO module_pricing (client_id, module_name, cost_per_job, effective_from)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(client_id, module_name, effective_from) DO UPDATE SET cost_per_job = excluded.cost_per_job
             `);
-            for (const [moduleName, rateInfo] of Object.entries(module_rates)) {
+            for (const [moduleName, rateInfo] of Object.entries(body.module_rates)) {
                 const cost = typeof rateInfo === 'object' ? rateInfo.cost_per_job : rateInfo;
                 if (cost !== undefined && cost !== null) {
                     upsert.run(clientId, moduleName, Number(cost), today);
                 }
             }
-            logger_1.logger.info('SYSTEM', 'MODULE_PRICING_SYNCED', `Synced ${Object.keys(module_rates).length} module rates to pricing table for client ${clientId}`);
         }
         const updatedClient = db.prepare('SELECT api_key FROM clients WHERE id = ?').get(clientId);
         if (updatedClient) {
             (0, license_cache_1.invalidateLicenseInCache)(updatedClient.api_key);
         }
-        logger_1.logger.info('SYSTEM', 'CLIENT_UPDATED', `Client ${name} updated`, { clientId, status, plan });
+        logger_1.logger.info('SYSTEM', 'CLIENT_UPDATED', `Client ${clientId} updated`, { fields: Object.keys(body) });
         res.json({ success: true });
     }
     catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.delete('/clients/:id', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.delete('/clients/:id', auth_1.requireAdminAuth, async (req, res) => {
     const clientId = parseInt(String(req.params.id));
     const db = (0, sqlite_1.getDatabase)();
     logger_1.logger.warn('SYSTEM', 'CLIENT_DELETED', `Client ${clientId} deleted`);
@@ -290,7 +330,7 @@ exports.mgmtRouter.delete('/clients/:id', requireAdminAuth, async (req, res) => 
     db.prepare('DELETE FROM clients WHERE id = ?').run(clientId);
     res.json({ success: true });
 });
-exports.mgmtRouter.post('/clients/:id/regenerate-key', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/clients/:id/regenerate-key', auth_1.requireAdminAuth, async (req, res) => {
     const clientId = parseInt(String(req.params.id));
     const newApiKey = `CUE-${crypto_1.default.randomBytes(12).toString('hex').toUpperCase()}`;
     const db = (0, sqlite_1.getDatabase)();
@@ -302,7 +342,7 @@ exports.mgmtRouter.post('/clients/:id/regenerate-key', requireAdminAuth, async (
     logger_1.logger.info('SYSTEM', 'CLIENT_API_KEY_REGENERATED', `API key regenerated for client ${clientId}`);
     res.json({ apiKey: newApiKey });
 });
-exports.mgmtRouter.post('/clients/:id/toggle-status', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/clients/:id/toggle-status', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientId = parseInt(String(req.params.id));
         const db = (0, sqlite_1.getDatabase)();
@@ -321,7 +361,7 @@ exports.mgmtRouter.post('/clients/:id/toggle-status', requireAdminAuth, async (r
     }
 });
 // Manage Credits
-exports.mgmtRouter.post('/clients/:id/credits', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/clients/:id/credits', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientId = parseInt(String(req.params.id));
         const { amount, reason } = req.body;
@@ -335,7 +375,7 @@ exports.mgmtRouter.post('/clients/:id/credits', requireAdminAuth, async (req, re
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.get('/clients/:id/credit-transactions', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/clients/:id/credit-transactions', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientId = parseInt(String(req.params.id));
         const transactions = await (0, db_mgmt_1.getCreditTransactions)(clientId);
@@ -346,7 +386,7 @@ exports.mgmtRouter.get('/clients/:id/credit-transactions', requireAdminAuth, asy
     }
 });
 // Get client credentials
-exports.mgmtRouter.get('/clients/:id/credentials', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/clients/:id/credentials', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientId = parseInt(String(req.params.id));
         console.log('[Credentials] GET for client:', clientId);
@@ -365,7 +405,7 @@ exports.mgmtRouter.get('/clients/:id/credentials', requireAdminAuth, async (req,
     }
 });
 // Update client credentials
-exports.mgmtRouter.put('/clients/:id/credentials', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.put('/clients/:id/credentials', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientId = parseInt(String(req.params.id));
         const { supabaseUrl, supabaseAnonKey } = req.body;
@@ -406,7 +446,7 @@ exports.mgmtRouter.put('/clients/:id/credentials', requireAdminAuth, async (req,
     }
 });
 // ===== Management Summary =====
-exports.mgmtRouter.get('/billing/summary', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/billing/summary', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const db = (0, sqlite_1.getDatabase)();
         // 1. Total Setup Fees (all-time)
@@ -446,7 +486,7 @@ exports.mgmtRouter.get('/billing/summary', requireAdminAuth, async (req, res) =>
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.get('/summary', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/summary', auth_1.requireAdminAuth, async (req, res) => {
     console.log('[Mgmt] GET /summary');
     try {
         const db = (0, sqlite_1.getDatabase)();
@@ -479,11 +519,11 @@ exports.mgmtRouter.get('/summary', requireAdminAuth, async (req, res) => {
     }
 });
 // ===== API Keys & Config =====
-exports.mgmtRouter.get('/clients/:id/api-keys', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/clients/:id/api-keys', auth_1.requireAdminAuth, async (req, res) => {
     const keys = await (0, db_mgmt_1.getClientApiKeys)(parseInt(String(req.params.id)));
     res.json(keys);
 });
-exports.mgmtRouter.get('/clients/:id/models', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/clients/:id/models', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientIdentifier = String(req.params.id);
         const db = (0, sqlite_1.getDatabase)();
@@ -505,7 +545,7 @@ exports.mgmtRouter.get('/clients/:id/models', requireAdminAuth, async (req, res)
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.post('/api-keys/:id/toggle', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/api-keys/:id/toggle', auth_1.requireAdminAuth, async (req, res) => {
     const apiKeyId = parseInt(String(req.params.id));
     const db = (0, sqlite_1.getDatabase)();
     const apiKey = db.prepare('SELECT client_id, api_key FROM client_api_keys WHERE id = ?').get(apiKeyId);
@@ -515,7 +555,7 @@ exports.mgmtRouter.post('/api-keys/:id/toggle', requireAdminAuth, async (req, re
     }
     res.json({ success });
 });
-exports.mgmtRouter.delete('/api-keys/:id', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.delete('/api-keys/:id', auth_1.requireAdminAuth, async (req, res) => {
     const apiKeyId = parseInt(String(req.params.id));
     const db = (0, sqlite_1.getDatabase)();
     const apiKey = db.prepare('SELECT client_id, api_key FROM client_api_keys WHERE id = ?').get(apiKeyId);
@@ -525,7 +565,7 @@ exports.mgmtRouter.delete('/api-keys/:id', requireAdminAuth, async (req, res) =>
     }
     res.json({ success });
 });
-exports.mgmtRouter.post('/clients/:id/api-keys', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/clients/:id/api-keys', auth_1.requireAdminAuth, async (req, res) => {
     const clientId = parseInt(String(req.params.id));
     const provider = String(req.body.provider);
     const { api_key } = req.body;
@@ -539,7 +579,7 @@ exports.mgmtRouter.post('/clients/:id/api-keys', requireAdminAuth, async (req, r
     }
     res.json({ success });
 });
-exports.mgmtRouter.post('/clients/:id/models', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/clients/:id/models', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientIdentifier = String(req.params.id);
         const db = (0, sqlite_1.getDatabase)();
@@ -583,7 +623,7 @@ exports.mgmtRouter.post('/clients/:id/models', requireAdminAuth, async (req, res
     }
 });
 // AI Module Settings Management
-exports.mgmtRouter.get('/clients/:id/ai-settings', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/clients/:id/ai-settings', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientId = parseInt(req.params.id);
         const settings = await (0, db_mgmt_1.getClientModuleSettings)(clientId);
@@ -593,7 +633,7 @@ exports.mgmtRouter.get('/clients/:id/ai-settings', requireAdminAuth, async (req,
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.post('/clients/:id/ai-settings', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/clients/:id/ai-settings', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientId = parseInt(req.params.id);
         const settings = req.body;
@@ -621,7 +661,7 @@ exports.mgmtRouter.post('/clients/:id/ai-settings', requireAdminAuth, async (req
 /**
  * AI LEARNING LOOP: Promote a result to a client example
  */
-exports.mgmtRouter.post('/clients/:id/promote-to-example', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/clients/:id/promote-to-example', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const clientId = parseInt(req.params.id);
         const { moduleName, context, output } = req.body;
@@ -636,8 +676,9 @@ exports.mgmtRouter.post('/clients/:id/promote-to-example', requireAdminAuth, asy
     }
 });
 exports.mgmtRouter.get('/clients/config', async (req, res) => {
+    var _a, _b;
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         console.log(`[MgmtConfig] Request received. API Key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'MISSING'}`);
         if (!apiKey) {
             console.warn('[MgmtConfig] Rejecting request: API key required');
@@ -645,6 +686,7 @@ exports.mgmtRouter.get('/clients/config', async (req, res) => {
         }
         const cached = (0, license_cache_1.getLicenseFromCache)(apiKey);
         const today = new Date().toISOString().split('T')[0];
+        const globalMaintenanceMode = parseInt((0, db_mgmt_1.getSystemSetting)('global_maintenance_mode') || '0');
         if (cached) {
             console.log(`[MgmtConfig] Serving from cache for client: ${cached.name}. allowRateCardFetch: ${!!cached.allowRateCardFetch}`);
             const isExpired = cached.contractEnd && cached.contractEnd < today;
@@ -665,6 +707,8 @@ exports.mgmtRouter.get('/clients/config', async (req, res) => {
                 shortCode: cached.shortCode || cached.name.substring(0, 3).toUpperCase(),
                 moduleRates: cached.allowRateCardFetch ? cached.moduleRates : null,
                 allowRateCardFetch: !!cached.allowRateCardFetch,
+                maintenance_mode: (_a = cached.maintenance_mode) !== null && _a !== void 0 ? _a : 0,
+                global_maintenance_mode: globalMaintenanceMode,
                 _cached: true
             });
         }
@@ -695,7 +739,9 @@ exports.mgmtRouter.get('/clients/config', async (req, res) => {
             credits: client.credits || 0,
             timezone: client.timezone || 'UTC',
             moduleRates: client.allow_rate_card_fetch ? (typeof client.module_rates === 'string' ? JSON.parse(client.module_rates) : client.module_rates) : null,
-            allowRateCardFetch: !!client.allow_rate_card_fetch
+            allowRateCardFetch: !!client.allow_rate_card_fetch,
+            maintenance_mode: (_b = client.maintenance_mode) !== null && _b !== void 0 ? _b : 0,
+            global_maintenance_mode: globalMaintenanceMode
         });
     }
     catch (err) {
@@ -705,7 +751,7 @@ exports.mgmtRouter.get('/clients/config', async (req, res) => {
 // Get client credentials (separate endpoint for fetching sensitive data)
 exports.mgmtRouter.get('/clients/credentials', async (req, res) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey)
             return res.status(400).json({ error: 'API key required' });
         // Get client from license key - use SQLite
@@ -713,33 +759,19 @@ exports.mgmtRouter.get('/clients/credentials', async (req, res) => {
         const client = db.prepare('SELECT * FROM clients WHERE api_key = ?').get(apiKey);
         if (!client)
             return res.status(404).json({ error: 'Client not found' });
-        // Get credentials from clients table
-        const creds = {
-            supabase_url: client.supabase_url || null,
-            supabase_anon_key: client.supabase_anon_key || null
-        };
-        // Get API keys for client
-        const keys = await (0, db_mgmt_1.getClientApiKeys)(client.id);
-        const modelsRow = db.prepare('SELECT * FROM client_models WHERE client_id = ?').all(client.id);
-        const models = modelsRow || [];
-        const rawProviderLabels = await (0, db_mgmt_1.getProviderLabels)();
-        const genericProviderLabels = {
-            'openai': 'ai_service_primary',
-            'openrouter': 'ai_service_secondary'
-        };
-        const sanitizedApiKeys = {};
-        keys.forEach((k) => {
-            if (k.is_active) {
-                const genericProvider = genericProviderLabels[k.provider] || k.provider;
-                sanitizedApiKeys[genericProvider] = k.api_key;
-            }
-        });
-        // Sanitize providerLabels keys
-        const sanitizedProviderLabels = {};
-        Object.entries(rawProviderLabels || {}).forEach(([provider, label]) => {
-            const genericProvider = genericProviderLabels[provider] || provider;
-            sanitizedProviderLabels[genericProvider] = label;
-        });
+        // [COMMENTED OUT - sensitive data not sent to client]
+        // const creds = { supabase_url: client.supabase_url || null, supabase_anon_key: client.supabase_anon_key || null };
+        // const keys = await getClientApiKeys(client.id);
+        // const modelsRow = db.prepare('SELECT * FROM client_models WHERE client_id = ?').all(client.id);
+        // const models = modelsRow || [];
+        // const rawProviderLabels = await getProviderLabels();
+        // const genericProviderLabels: Record<string, string> = { 'openai': 'ai_service_primary', 'openrouter': 'ai_service_secondary' };
+        // const sanitizedApiKeys: Record<string, string> = {};
+        // keys.forEach((k: any) => { if (k.is_active) { sanitizedApiKeys[genericProviderLabels[k.provider] || k.provider] = k.api_key; } });
+        // const sanitizedProviderLabels: Record<string, string> = {};
+        // Object.entries(rawProviderLabels || {}).forEach(([provider, label]) => { sanitizedProviderLabels[genericProviderLabels[provider] || provider] = label as string; });
+        // const sanitizedModels: any[] = [];
+        // if (Array.isArray(models)) { models.forEach((m: any) => { ... }); }
         // Parse module_rates from client (only if fetching is allowed)
         let moduleRates = {};
         if (client.module_rates && client.allow_rate_card_fetch) {
@@ -750,46 +782,14 @@ exports.mgmtRouter.get('/clients/credentials', async (req, res) => {
                 moduleRates = {};
             }
         }
-        // Sanitize models array (handle both old array format and new table format)
-        const sanitizedModels = [];
-        if (Array.isArray(models)) {
-            models.forEach((m) => {
-                if (m.models && Array.isArray(m.models)) {
-                    // Old format with models JSON column
-                    m.models.forEach((mm) => {
-                        const genericProvider = genericProviderLabels[mm.api_provider] || mm.api_provider;
-                        sanitizedModels.push({
-                            module_name: mm.module_name,
-                            api_provider: genericProvider,
-                            api_model: mm.api_model
-                        });
-                    });
-                }
-                else {
-                    // New table format
-                    const genericProvider = genericProviderLabels[m.api_provider] || m.api_provider;
-                    sanitizedModels.push({
-                        module_name: m.module_name,
-                        api_provider: genericProvider,
-                        api_model: m.api_model
-                    });
-                }
-            });
-        }
         res.json({
-            apiKeys: sanitizedApiKeys,
-            maskedApiKeys: keys.reduce((acc, k) => {
-                if (k.is_active) {
-                    const genericProvider = genericProviderLabels[k.provider] || k.provider;
-                    acc[genericProvider] = k.api_key_prefix;
-                }
-                return acc;
-            }, {}),
-            configuredModels: sanitizedModels,
-            providerLabels: sanitizedProviderLabels,
+            // apiKeys: sanitizedApiKeys,           // REMOVED - leaks full API keys to client
+            // maskedApiKeys: keys.reduce(...),      // REMOVED - unnecessary
+            // configuredModels: sanitizedModels,    // REMOVED - model config handled server-side
+            // providerLabels: sanitizedProviderLabels, // REMOVED - server-side concern
             moduleRates,
-            supabaseUrl: (creds === null || creds === void 0 ? void 0 : creds.supabase_url) || null,
-            supabaseAnonKey: (creds === null || creds === void 0 ? void 0 : creds.supabase_anon_key) || null
+            // supabaseUrl: creds?.supabase_url || null,  // REMOVED - should never leak
+            // supabaseAnonKey: creds?.supabase_anon_key || null // REMOVED - should never leak
         });
     }
     catch (err) {
@@ -799,7 +799,7 @@ exports.mgmtRouter.get('/clients/credentials', async (req, res) => {
 // Get module pricing for a client
 exports.mgmtRouter.get('/clients/pricing', async (req, res) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey)
             return res.status(400).json({ error: 'API key required' });
         let clientId = null;
@@ -834,7 +834,7 @@ exports.mgmtRouter.get('/clients/pricing', async (req, res) => {
 // Lightweight license validation - just checks if key is valid/active (no full config)
 exports.mgmtRouter.get('/clients/validate', async (req, res) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey)
             return res.status(400).json({ valid: false, error: 'API key required' });
         const cached = (0, license_cache_1.getLicenseFromCache)(apiKey);
@@ -866,7 +866,7 @@ exports.mgmtRouter.get('/clients/validate', async (req, res) => {
     }
 });
 // ===== Usage & Logs =====
-exports.mgmtRouter.get('/logs', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/logs', auth_1.requireAdminAuth, async (req, res) => {
     const { clientId, provider, direction, startDate, endDate, limit, offset, requestId, parentJobId } = req.query;
     const logs = await (0, db_mgmt_1.getApiLogs)({
         clientId: clientId ? parseInt(String(clientId)) : undefined,
@@ -881,22 +881,22 @@ exports.mgmtRouter.get('/logs', requireAdminAuth, async (req, res) => {
     });
     res.json(logs);
 });
-exports.mgmtRouter.get('/logs/stats', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/logs/stats', auth_1.requireAdminAuth, async (req, res) => {
     const days = req.query.days ? parseInt(String(req.query.days)) : 30;
     const stats = await (0, db_mgmt_1.getApiStats)(undefined, days);
     res.json(stats);
 });
 // ===== Available Models =====
-exports.mgmtRouter.get('/available-models', async (req, res) => {
+exports.mgmtRouter.get('/available-models', auth_1.requireAdminOrClientAuth, async (req, res) => {
     const models = await (0, db_mgmt_1.getAvailableModels)();
     res.json(models);
 });
-exports.mgmtRouter.post('/available-models', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/available-models', auth_1.requireAdminAuth, async (req, res) => {
     const { module_id, provider, model_id, display_name } = req.body;
     const success = await (0, db_mgmt_1.addModel)(module_id, provider, model_id, display_name);
     res.json({ success });
 });
-exports.mgmtRouter.get('/available-models/discover-openrouter', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/available-models/discover-openrouter', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const db = (0, sqlite_1.getDatabase)();
         const apiKeyRow = db.prepare(`
@@ -918,7 +918,7 @@ exports.mgmtRouter.get('/available-models/discover-openrouter', requireAdminAuth
  * GET /api/mgmt/provider-billing
  * Fetch billing/credits info from external providers
  */
-exports.mgmtRouter.get('/provider-billing', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/provider-billing', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const result = await (0, db_mgmt_1.getProviderBilling)();
         res.json(Object.assign({ success: true }, result));
@@ -929,10 +929,18 @@ exports.mgmtRouter.get('/provider-billing', requireAdminAuth, async (req, res) =
     }
 });
 /**
+ * GET /api/mgmt/my-ip
+ * Returns the client's IP address as seen by the server.
+ * Used by the management UI "Add My IP" button.
+ */
+exports.mgmtRouter.get('/my-ip', auth_1.requireAdminAuth, (req, res) => {
+    res.json({ ip: (0, ip_utils_1.getClientIp)(req) });
+});
+/**
  * GET /api/mgmt/system-settings
  * Return all system settings (values masked for security)
  */
-exports.mgmtRouter.get('/system-settings', requireAdminAuth, (req, res) => {
+exports.mgmtRouter.get('/system-settings', auth_1.requireAdminAuth, (req, res) => {
     const settings = (0, db_mgmt_1.getAllSystemSettings)();
     // Mask sensitive values before sending
     const masked = {};
@@ -950,7 +958,7 @@ exports.mgmtRouter.get('/system-settings', requireAdminAuth, (req, res) => {
  * POST /api/mgmt/system-settings
  * Save a system setting (key/value pair)
  */
-exports.mgmtRouter.post('/system-settings', requireAdminAuth, (req, res) => {
+exports.mgmtRouter.post('/system-settings', auth_1.requireAdminAuth, (req, res) => {
     const { key, value } = req.body;
     if (!key || typeof value === 'undefined') {
         return res.status(400).json({ error: 'key and value are required' });
@@ -963,7 +971,7 @@ exports.mgmtRouter.post('/system-settings', requireAdminAuth, (req, res) => {
         res.status(500).json({ error: 'Failed to save setting' });
     }
 });
-exports.mgmtRouter.post('/available-models/sync-openrouter', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/available-models/sync-openrouter', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const db = (0, sqlite_1.getDatabase)();
         // Get the first available OpenRouter API key
@@ -984,27 +992,27 @@ exports.mgmtRouter.post('/available-models/sync-openrouter', requireAdminAuth, a
         res.status(500).json({ error: error.message });
     }
 });
-exports.mgmtRouter.post('/available-models/:id/toggle', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/available-models/:id/toggle', auth_1.requireAdminAuth, async (req, res) => {
     const success = await (0, db_mgmt_1.toggleModel)(parseInt(String(req.params.id)));
     res.json({ success });
 });
-exports.mgmtRouter.delete('/available-models/:id', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.delete('/available-models/:id', auth_1.requireAdminAuth, async (req, res) => {
     const success = await (0, db_mgmt_1.deleteModel)(parseInt(String(req.params.id)));
     res.json({ success });
 });
 // ===== Provider Labels =====
-exports.mgmtRouter.get('/provider-labels', async (req, res) => {
+exports.mgmtRouter.get('/provider-labels', auth_1.requireAdminOrClientAuth, async (req, res) => {
     const labels = await (0, db_mgmt_1.getProviderLabels)();
     res.json(labels);
 });
-exports.mgmtRouter.put('/provider-labels/:provider', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.put('/provider-labels/:provider', auth_1.requireAdminAuth, async (req, res) => {
     const success = await (0, db_mgmt_1.setProviderLabel)(String(req.params.provider), String(req.body.label));
     res.json({ success });
 });
 // ===== Watcher Heartbeat =====
 exports.mgmtRouter.post('/clients/heartbeat', async (req, res) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey)
             return res.status(400).json({ error: 'API key required' });
         const db = (0, sqlite_1.getDatabase)();
@@ -1023,7 +1031,7 @@ exports.mgmtRouter.post('/clients/heartbeat', async (req, res) => {
 });
 // ===== Usage Logging =====
 // Get client usage logs
-exports.mgmtRouter.get('/client-usage-logs', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/client-usage-logs', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { clientId, limit } = req.query;
         const db = (0, sqlite_1.getDatabase)();
@@ -1052,7 +1060,7 @@ exports.mgmtRouter.get('/client-usage-logs', requireAdminAuth, async (req, res) 
 });
 exports.mgmtRouter.post('/clients/usage', async (req, res) => {
     try {
-        const apiKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        const apiKey = getClientApiKey(req);
         if (!apiKey)
             return res.status(400).json({ error: 'API key required' });
         // Get client from license key - use SQLite
@@ -1084,7 +1092,7 @@ exports.mgmtRouter.post('/clients/usage', async (req, res) => {
 });
 // ===== License Cache Management =====
 // GET /clients/cache - Get cache stats for all clients
-exports.mgmtRouter.get('/clients/cache', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/clients/cache', auth_1.requireAdminAuth, async (req, res) => {
     try {
         // Get all clients from database (including UUID)
         const db = (0, sqlite_1.getDatabase)();
@@ -1118,7 +1126,7 @@ exports.mgmtRouter.get('/clients/cache', requireAdminAuth, async (req, res) => {
     }
 });
 // POST /clients/cache/refresh - Force refresh cache for a client
-exports.mgmtRouter.post('/clients/cache/refresh', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/clients/cache/refresh', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { clientId } = req.body;
         if (!clientId) {
@@ -1140,7 +1148,7 @@ exports.mgmtRouter.post('/clients/cache/refresh', requireAdminAuth, async (req, 
     }
 });
 // DELETE /clients/cache - Clear cache for a client
-exports.mgmtRouter.delete('/clients/cache', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.delete('/clients/cache', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { clientId, apiKey } = req.body;
         if (!clientId && !apiKey) {
@@ -1164,7 +1172,7 @@ exports.mgmtRouter.delete('/clients/cache', requireAdminAuth, async (req, res) =
 });
 // ===== SMTP Settings =====
 // Get SMTP settings
-exports.mgmtRouter.get('/smtp/settings', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/smtp/settings', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const db = (0, sqlite_1.getDatabase)();
         const data = db.prepare('SELECT * FROM smtp_settings LIMIT 1').get();
@@ -1188,7 +1196,7 @@ exports.mgmtRouter.get('/smtp/settings', requireAdminAuth, async (req, res) => {
     }
 });
 // Save SMTP settings
-exports.mgmtRouter.post('/smtp/settings', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/smtp/settings', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { host, port, secure, username, password, auth_type, from_email, from_name, is_active } = req.body;
         if (!host) {
@@ -1224,7 +1232,7 @@ exports.mgmtRouter.post('/smtp/settings', requireAdminAuth, async (req, res) => 
     }
 });
 // Test SMTP connection
-exports.mgmtRouter.post('/smtp/test', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/smtp/test', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { host, port, secure, username, password, auth_type, from_email } = req.body;
         if (!host || !from_email) {
@@ -1249,7 +1257,7 @@ exports.mgmtRouter.post('/smtp/test', requireAdminAuth, async (req, res) => {
     }
 });
 // Send test email
-exports.mgmtRouter.post('/smtp/send-test', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/smtp/send-test', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { test_email } = req.body;
         if (!test_email) {
@@ -1286,7 +1294,7 @@ exports.mgmtRouter.post('/smtp/send-test', requireAdminAuth, async (req, res) =>
 });
 // ===== Email Notification Settings =====
 // Get email notification settings
-exports.mgmtRouter.get('/notifications/settings', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/notifications/settings', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const db = (0, sqlite_1.getDatabase)();
         const data = db.prepare('SELECT * FROM email_notification_settings ORDER BY id').all();
@@ -1297,7 +1305,7 @@ exports.mgmtRouter.get('/notifications/settings', requireAdminAuth, async (req, 
     }
 });
 // Update email notification setting
-exports.mgmtRouter.put('/notifications/settings/:eventType', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.put('/notifications/settings/:eventType', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { eventType } = req.params;
         const { is_enabled, recipient_emails, threshold_value, threshold_unit, min_pending_age_hours } = req.body;
@@ -1315,7 +1323,7 @@ exports.mgmtRouter.put('/notifications/settings/:eventType', requireAdminAuth, a
     }
 });
 // Get pending sync queue status (for notifications)
-exports.mgmtRouter.get('/notifications/pending-status', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/notifications/pending-status', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const db = (0, sqlite_1.getDatabase)();
         const pending = db.prepare("SELECT COUNT(*) as count FROM pending_sync_queue WHERE status = 'pending'").get();
@@ -1333,7 +1341,7 @@ exports.mgmtRouter.get('/notifications/pending-status', requireAdminAuth, async 
 });
 // ===== AI Audit Logs (Diagnostic View) =====
 // Get all AI audit logs
-exports.mgmtRouter.get('/api-logs', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/api-logs', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { limit = 100, clientId, moduleId } = req.query;
         const db = (0, sqlite_1.getDatabase)();
@@ -1365,7 +1373,7 @@ exports.mgmtRouter.get('/api-logs', requireAdminAuth, async (req, res) => {
 });
 // ===== Pending Sync Queue (Admin View) =====
 // Get pending sync queue
-exports.mgmtRouter.get('/sync-queue', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/sync-queue', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { status, limit } = req.query;
         const db = (0, sqlite_1.getDatabase)();
@@ -1390,7 +1398,7 @@ exports.mgmtRouter.get('/sync-queue', requireAdminAuth, async (req, res) => {
     }
 });
 // Retry a specific sync item
-exports.mgmtRouter.post('/sync-queue/:id/retry', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/sync-queue/:id/retry', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const db = (0, sqlite_1.getDatabase)();
@@ -1406,7 +1414,7 @@ exports.mgmtRouter.post('/sync-queue/:id/retry', requireAdminAuth, async (req, r
     }
 });
 // Delete a sync item
-exports.mgmtRouter.delete('/sync-queue/:id', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.delete('/sync-queue/:id', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const db = (0, sqlite_1.getDatabase)();
@@ -1418,7 +1426,7 @@ exports.mgmtRouter.delete('/sync-queue/:id', requireAdminAuth, async (req, res) 
     }
 });
 // Get sync queue stats
-exports.mgmtRouter.get('/sync-queue/stats', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/sync-queue/stats', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const db = (0, sqlite_1.getDatabase)();
         const pending = db.prepare("SELECT status, created_at FROM pending_sync_queue WHERE status = 'pending'").all();
@@ -1442,7 +1450,7 @@ exports.mgmtRouter.get('/sync-queue/stats', requireAdminAuth, async (req, res) =
 });
 // ===== Global System Settings =====
 // GET Global settings
-exports.mgmtRouter.get('/settings/system', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/settings/system', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const settings = await (0, db_mgmt_1.getAllSystemSettings)();
         res.json(settings);
@@ -1452,7 +1460,7 @@ exports.mgmtRouter.get('/settings/system', requireAdminAuth, async (req, res) =>
     }
 });
 // POST Global settings
-exports.mgmtRouter.post('/settings/system', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/settings/system', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { system_timezone, system_name } = req.body;
         if (system_timezone) {
@@ -1468,7 +1476,7 @@ exports.mgmtRouter.post('/settings/system', requireAdminAuth, async (req, res) =
     }
 });
 // ===== AI Job Queue Management =====
-exports.mgmtRouter.get('/ai-queue/stats', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/ai-queue/stats', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { clientId } = req.query;
         const db = (0, sqlite_1.getDatabase)();
@@ -1494,7 +1502,7 @@ exports.mgmtRouter.get('/ai-queue/stats', requireAdminAuth, async (req, res) => 
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.get('/ai-queue', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/ai-queue', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { status, clientId, limit } = req.query;
         const db = (0, sqlite_1.getDatabase)();
@@ -1535,7 +1543,7 @@ exports.mgmtRouter.get('/ai-queue', requireAdminAuth, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.delete('/ai-queue/:id', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.delete('/ai-queue/:id', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const db = (0, sqlite_1.getDatabase)();
@@ -1547,7 +1555,7 @@ exports.mgmtRouter.delete('/ai-queue/:id', requireAdminAuth, async (req, res) =>
     }
 });
 // Change Priority
-exports.mgmtRouter.post('/ai-queue/:id/priority', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/ai-queue/:id/priority', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const { priority } = req.body;
@@ -1560,7 +1568,7 @@ exports.mgmtRouter.post('/ai-queue/:id/priority', requireAdminAuth, async (req, 
     }
 });
 // Free Resource (Abort Processing)
-exports.mgmtRouter.post('/ai-queue/:id/free', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/ai-queue/:id/free', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const { abortJob } = await Promise.resolve().then(() => __importStar(require('../ai-queue')));
@@ -1577,7 +1585,7 @@ exports.mgmtRouter.post('/ai-queue/:id/free', requireAdminAuth, async (req, res)
     }
 });
 // Retry a failed or partial ai_job (Enhanced for surgical retries)
-exports.mgmtRouter.post('/ai-queue/:id/retry', requireAuth, async (req, res) => {
+exports.mgmtRouter.post('/ai-queue/:id/retry', auth_1.requireAdminAuth, async (req, res) => {
     var _a, _b, _c;
     try {
         const { id } = req.params;
@@ -1662,7 +1670,7 @@ exports.mgmtRouter.post('/ai-queue/:id/retry', requireAuth, async (req, res) => 
  * Universal Export Result Endpoint
  * Handles subtitles, ad_breaks, promo_breaks, metadata
  */
-exports.mgmtRouter.post('/jobs/:id/export-result', requireAuth, async (req, res) => {
+exports.mgmtRouter.post('/jobs/:id/export-result', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const { moduleName, data } = req.body;
@@ -1696,7 +1704,7 @@ exports.mgmtRouter.post('/jobs/:id/export-result', requireAuth, async (req, res)
  * Universal Download Result Endpoint
  * returns raw content for browser download
  */
-exports.mgmtRouter.post('/jobs/:id/download-result', requireAuth, async (req, res) => {
+exports.mgmtRouter.post('/jobs/:id/download-result', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const { moduleName, data } = req.body;
@@ -1718,7 +1726,7 @@ exports.mgmtRouter.post('/jobs/:id/download-result', requireAuth, async (req, re
     }
 });
 // ===== Global AI Fallback Settings =====
-exports.mgmtRouter.get('/settings/global-fallback', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.get('/settings/global-fallback', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { getGlobalDefaultModel } = await Promise.resolve().then(() => __importStar(require('../db-mgmt')));
         const model = await getGlobalDefaultModel();
@@ -1728,11 +1736,260 @@ exports.mgmtRouter.get('/settings/global-fallback', requireAdminAuth, async (req
         res.status(500).json({ error: err.message });
     }
 });
-exports.mgmtRouter.post('/settings/global-fallback', requireAdminAuth, async (req, res) => {
+exports.mgmtRouter.post('/settings/global-fallback', auth_1.requireAdminAuth, async (req, res) => {
     try {
         const { model } = req.body;
         const { setGlobalDefaultModel } = await Promise.resolve().then(() => __importStar(require('../db-mgmt')));
         await setGlobalDefaultModel(model);
+        res.json({ success: true });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+// ===== Queue Pause & Maintenance API =====
+exports.mgmtRouter.get('/ai-queue/status', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const db = (0, sqlite_1.getDatabase)();
+        const { getSystemSetting } = await Promise.resolve().then(() => __importStar(require('../db-mgmt')));
+        const globalQueuePaused = parseInt(getSystemSetting('global_queue_paused') || '0');
+        const globalMaintenanceMode = parseInt(getSystemSetting('global_maintenance_mode') || '0');
+        // Count active/pending grouped by client
+        const clientsWithJobs = db.prepare(`
+            SELECT c.id, c.name, c.queue_paused, c.maintenance_mode,
+                SUM(CASE WHEN q.status = 'processing' THEN 1 ELSE 0 END) as active_count,
+                SUM(CASE WHEN q.status = 'pending' THEN 1 ELSE 0 END) as pending_count
+            FROM clients c
+            LEFT JOIN ai_jobs q ON q.client_id = c.id AND q.queue_status IN ('pending', 'processing')
+            GROUP BY c.id
+        `).all();
+        res.json({
+            globalQueuePaused,
+            globalMaintenanceMode,
+            clients: clientsWithJobs
+        });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+exports.mgmtRouter.post('/queue/pause/global', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const { getSystemSetting, setSystemSetting } = await Promise.resolve().then(() => __importStar(require('../db-mgmt')));
+        const current = parseInt(getSystemSetting('global_queue_paused') || '0');
+        await setSystemSetting('global_queue_paused', current ? '0' : '1');
+        res.json({ success: true, paused: !current });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+exports.mgmtRouter.post('/maintenance/global', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const { getSystemSetting, setSystemSetting } = await Promise.resolve().then(() => __importStar(require('../db-mgmt')));
+        const current = parseInt(getSystemSetting('global_maintenance_mode') || '0');
+        await setSystemSetting('global_maintenance_mode', current ? '0' : '1');
+        res.json({ success: true, enabled: !current });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+exports.mgmtRouter.post('/queue/pause/client/:id', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const clientId = parseInt(String(req.params.id));
+        const db = (0, sqlite_1.getDatabase)();
+        const client = db.prepare('SELECT queue_paused FROM clients WHERE id = ?').get(clientId);
+        if (!client)
+            return res.status(404).json({ error: 'Client not found' });
+        const newStatus = client.queue_paused ? 0 : 1;
+        db.prepare('UPDATE clients SET queue_paused = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStatus, clientId);
+        res.json({ success: true, paused: !!newStatus });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+// ── Dev Mode Template CRUD ──
+exports.mgmtRouter.get('/dev/templates', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const db = (0, sqlite_1.getDatabase)();
+        const moduleFilter = req.query.module ? req.query.module : null;
+        const clientFilter = req.query.client_id ? req.query.client_id : null;
+        let sql = `SELECT dt.*, GROUP_CONCAT(dtc.client_id) as client_ids_csv FROM dev_templates dt LEFT JOIN dev_template_clients dtc ON dt.id = dtc.template_id WHERE 1=1`;
+        const params = [];
+        if (moduleFilter) {
+            sql += ` AND dt.module_name = ?`;
+            params.push(moduleFilter);
+        }
+        if (clientFilter) {
+            sql += ` AND dtc.client_id = ?`;
+            params.push(parseInt(clientFilter));
+        }
+        sql += ` GROUP BY dt.id ORDER BY dt.module_name, dt.duration_min`;
+        const templates = db.prepare(sql).all(...params).map(t => (Object.assign(Object.assign({}, t), { client_ids: t.client_ids_csv ? t.client_ids_csv.split(',').map(Number) : [], client_name: undefined, client_ids_csv: undefined })));
+        // Enrich with client names
+        const clientNames = db.prepare('SELECT id, name FROM clients').all();
+        const nameMap = Object.fromEntries(clientNames.map(c => [c.id, c.name]));
+        for (const t of templates) {
+            t.client_names = t.client_ids.map((id) => nameMap[id] || `#${id}`).join(', ');
+        }
+        res.json(templates || []);
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+exports.mgmtRouter.get('/dev/templates/clients', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const db = (0, sqlite_1.getDatabase)();
+        const templates = db.prepare(`
+            SELECT dt.*, GROUP_CONCAT(dtc.client_id) as client_ids_csv
+            FROM dev_templates dt
+            JOIN dev_template_clients dtc ON dt.id = dtc.template_id
+            GROUP BY dt.id
+            ORDER BY dt.module_name, dt.duration_min
+        `).all();
+        const result = templates.map(t => (Object.assign(Object.assign({}, t), { client_ids: t.client_ids_csv ? t.client_ids_csv.split(',').map(Number) : [], client_ids_csv: undefined })));
+        const clientNames = db.prepare('SELECT id, name FROM clients').all();
+        const nameMap = Object.fromEntries(clientNames.map(c => [c.id, c.name]));
+        for (const t of result) {
+            t.client_names = t.client_ids.map((id) => nameMap[id] || `#${id}`).join(', ');
+        }
+        res.json(result || []);
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+exports.mgmtRouter.get('/dev/jobs/recent', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const db = (0, sqlite_1.getDatabase)();
+        const limit = parseInt(String(req.query.limit)) || 20;
+        const jobs = db.prepare(`
+            SELECT j.id, j.local_job_id, j.file_duration, j.client_id, c.name as client_name, j.status, j.modules_requested, j.created_at
+            FROM ai_jobs j
+            LEFT JOIN clients c ON j.client_id = c.id
+            WHERE j.status IN ('completed', 'partial')
+            ORDER BY j.created_at DESC
+            LIMIT ?
+        `).all(limit);
+        res.json(jobs || []);
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+exports.mgmtRouter.get('/dev/jobs/:id/results', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const db = (0, sqlite_1.getDatabase)();
+        const job = db.prepare('SELECT result_data, modules_requested, local_job_id, file_duration FROM ai_jobs WHERE id = ?').get(req.params.id);
+        if (!job)
+            return res.status(404).json({ error: 'Job not found' });
+        res.json({
+            result_data: job.result_data ? JSON.parse(job.result_data) : null,
+            modules_requested: job.modules_requested ? JSON.parse(job.modules_requested) : [],
+            local_job_id: job.local_job_id,
+            file_duration: job.file_duration
+        });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+exports.mgmtRouter.post('/dev/templates', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const { label, module_name, duration_min, duration_max, template_data, client_ids } = req.body;
+        if (!label || !module_name || !template_data) {
+            return res.status(400).json({ error: 'label, module_name, and template_data are required' });
+        }
+        const db = (0, sqlite_1.getDatabase)();
+        const result = db.prepare(`
+            INSERT INTO dev_templates (label, module_name, duration_min, duration_max, template_data, client_id, is_system)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        `).run(label, module_name, duration_min || 0, duration_max || 0, typeof template_data === 'string' ? template_data : JSON.stringify(template_data), null);
+        const templateId = result.lastInsertRowid;
+        const ids = Array.isArray(client_ids) ? client_ids.filter((id) => id) : [];
+        if (ids.length > 0) {
+            const txn = db.transaction(() => {
+                const insert = db.prepare('INSERT INTO dev_template_clients (template_id, client_id) VALUES (?, ?)');
+                for (const cid of ids) {
+                    insert.run(templateId, parseInt(cid));
+                }
+            });
+            txn();
+        }
+        res.json({ success: true, id: templateId });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+exports.mgmtRouter.put('/dev/templates/:id', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const templateId = parseInt(String(req.params.id));
+        const db = (0, sqlite_1.getDatabase)();
+        const existing = db.prepare('SELECT * FROM dev_templates WHERE id = ?').get(templateId);
+        if (!existing)
+            return res.status(404).json({ error: 'Template not found' });
+        if (existing.is_system)
+            return res.status(400).json({ error: 'System templates cannot be modified. Create a client-specific override instead.' });
+        const { label, module_name, duration_min, duration_max, template_data, client_ids } = req.body;
+        const sets = ['updated_at = datetime(\'now\')'];
+        const vals = [];
+        if (label !== undefined) {
+            sets.push('label = ?');
+            vals.push(label);
+        }
+        if (module_name !== undefined) {
+            sets.push('module_name = ?');
+            vals.push(module_name);
+        }
+        if (duration_min !== undefined) {
+            sets.push('duration_min = ?');
+            vals.push(duration_min);
+        }
+        if (duration_max !== undefined) {
+            sets.push('duration_max = ?');
+            vals.push(duration_max);
+        }
+        if (template_data !== undefined) {
+            sets.push('template_data = ?');
+            vals.push(typeof template_data === 'string' ? template_data : JSON.stringify(template_data));
+        }
+        if (sets.length > 1) {
+            vals.push(templateId);
+            db.prepare(`UPDATE dev_templates SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+        }
+        if (client_ids !== undefined) {
+            const txn = db.transaction(() => {
+                db.prepare('DELETE FROM dev_template_clients WHERE template_id = ?').run(templateId);
+                const ids = Array.isArray(client_ids) ? client_ids.filter((id) => id) : [];
+                if (ids.length > 0) {
+                    const insert = db.prepare('INSERT INTO dev_template_clients (template_id, client_id) VALUES (?, ?)');
+                    for (const cid of ids) {
+                        insert.run(templateId, parseInt(cid));
+                    }
+                }
+            });
+            txn();
+        }
+        res.json({ success: true });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+exports.mgmtRouter.delete('/dev/templates/:id', auth_1.requireAdminAuth, async (req, res) => {
+    try {
+        const templateId = parseInt(String(req.params.id));
+        const db = (0, sqlite_1.getDatabase)();
+        const existing = db.prepare('SELECT * FROM dev_templates WHERE id = ?').get(templateId);
+        if (!existing)
+            return res.status(404).json({ error: 'Template not found' });
+        if (existing.is_system)
+            return res.status(400).json({ error: 'System templates cannot be deleted. Create a client-specific override instead.' });
+        db.prepare('DELETE FROM dev_templates WHERE id = ?').run(templateId);
         res.json({ success: true });
     }
     catch (err) {

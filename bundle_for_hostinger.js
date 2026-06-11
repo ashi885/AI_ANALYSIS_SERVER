@@ -2,17 +2,18 @@ const fs = require('fs');
 const path = require('path');
 
 const srcDir = __dirname;
-const destDir = 'C:\\GOOGLE_AntiGravity\\Hostinger\\cuepoint-server';
+const destDir = 'C:\\GOOGLE_AntiGravity\\Hostinger\\cuepoint-server_20';
 
 const filesToCopy = [
     'package.json',
     'package-lock.json',
     'tsconfig.json',
-    '.env' 
+    '.env'
 ];
 
 const foldersToCopy = [
     'src',
+    'scripts',
     'client'
 ];
 
@@ -32,12 +33,12 @@ function copyFolderRecursiveSync(source, target) {
     if (!fs.existsSync(targetFolder)) {
         fs.mkdirSync(targetFolder);
     }
-    
+
     if (fs.lstatSync(source).isDirectory()) {
         files = fs.readdirSync(source);
         files.forEach(function (file) {
             if (file === 'node_modules' || file === 'dist' || file === '.next') return; // Skip build and modules
-            
+
             var curSource = path.join(source, file);
             if (fs.lstatSync(curSource).isDirectory()) {
                 copyFolderRecursiveSync(curSource, targetFolder);
@@ -49,7 +50,7 @@ function copyFolderRecursiveSync(source, target) {
 }
 
 // Ensure destination exists
-if (!fs.existsSync(destDir)){
+if (!fs.existsSync(destDir)) {
     fs.mkdirSync(destDir, { recursive: true });
 }
 
@@ -58,7 +59,7 @@ filesToCopy.forEach(file => {
     const srcPath = path.join(srcDir, file);
     if (fs.existsSync(srcPath)) {
         if (file === '.env') {
-            copyFileSync(srcPath, path.join(destDir, '.env.example'));
+            copyFileSync(srcPath, path.join(destDir, '.env'));
         } else {
             copyFileSync(srcPath, destDir);
         }
@@ -73,12 +74,12 @@ foldersToCopy.forEach(folder => {
     }
 });
 
-// Create empty data and logs directories
-['data', 'logs'].forEach(dir => {
-    const p = path.join(destDir, dir);
-    if (!fs.existsSync(p)) {
-        fs.mkdirSync(p, { recursive: true });
-    }
-});
+// // Create empty data and logs directories
+// ['data', 'logs'].forEach(dir => {
+//     const p = path.join(destDir, dir);
+//     if (!fs.existsSync(p)) {
+//         fs.mkdirSync(p, { recursive: true });
+//     }
+// });
 
 console.log('Copy complete!');

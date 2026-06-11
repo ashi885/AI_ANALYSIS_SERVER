@@ -18,17 +18,20 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
+const helmet_1 = __importDefault(require("helmet"));
+const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const auth_1 = require("./routes/auth");
+const auth_tokens_1 = require("./routes/auth-tokens");
 const ai_1 = require("./routes/ai");
 const analyze_1 = require("./routes/analyze");
 const mgmt_1 = require("./routes/mgmt");
-const logs_1 = require("./routes/logs");
 const logger_1 = require("./logger");
 const supabase_1 = require("./supabase");
 const license_cache_1 = require("./license-cache");
 const sqlite_1 = require("./sqlite");
 const ai_queue_1 = require("./ai-queue");
+const access_logger_1 = require("./utils/access-logger");
 const app = (0, express_1.default)();
 const port = process.env.PORT || 3001;
 async function checkDatabaseConnections() {
@@ -51,19 +54,45 @@ app.use((0, cors_1.default)({
     origin: '*', // Allow all for management access
     credentials: true
 }));
+app.use((0, helmet_1.default)());
 app.use(express_1.default.json());
 app.use((0, cookie_parser_1.default)());
-// Global request logging
-app.use((req, res, next) => {
-    console.log(`[HTTP] ${req.method} ${req.path}`);
-    next();
+// Trust Hostinger's reverse proxy so rate limiter and IP logging use real client IPs
+app.set('trust proxy', 1);
+// Access logger — logs every API request with real client IP, method, path, status, duration
+app.use(access_logger_1.accessLoggerMiddleware);
+// Rate limits configurable via env vars (no rebuild needed)
+const globalLimiter = (0, express_rate_limit_1.default)({
+    windowMs: parseInt(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS || '60000'),
+    max: parseInt(process.env.RATE_LIMIT_GLOBAL_MAX || '200'),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' }
 });
-// Routes
+app.use(globalLimiter);
+// Stricter rate limit for client-facing endpoints (default: 40 req/min)
+const clientLimiter = (0, express_rate_limit_1.default)({
+    windowMs: parseInt(process.env.RATE_LIMIT_CLIENT_WINDOW_MS || '60000'),
+    max: parseInt(process.env.RATE_LIMIT_CLIENT_MAX || '40'),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' }
+});
+// Only apply to client-facing endpoints (admin routes bypass this limit)
+app.use('/api/mgmt/clients/config', clientLimiter);
+app.use('/api/mgmt/clients/credentials', clientLimiter);
+app.use('/api/mgmt/clients/pricing', clientLimiter);
+app.use('/api/mgmt/clients/validate', clientLimiter);
+app.use('/api/mgmt/clients/heartbeat', clientLimiter);
+app.use('/api/mgmt/clients/usage', clientLimiter);
+app.use('/api/mgmt/available-models', clientLimiter);
+app.use('/api/mgmt/provider-labels', clientLimiter);
+app.use('/api/auth/token', clientLimiter);
 app.use('/api/auth', auth_1.authRouter);
+app.use('/api/auth', auth_tokens_1.authTokenRouter);
 app.use('/api/ai', ai_1.aiRouter);
 app.use('/api/ai', analyze_1.analyzeRouter);
 app.use('/api/mgmt', mgmt_1.mgmtRouter);
-app.use('/api/logs', logs_1.logsRouter);
 app.get('/health', (req, res) => {
     const status = (0, supabase_1.getConnectionStatus)();
     const cacheStats = (0, license_cache_1.getLicenseCacheStats)();

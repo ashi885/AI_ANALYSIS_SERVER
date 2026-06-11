@@ -36,6 +36,18 @@ aiRouter.post('/whisper', licenseMiddleware, upload.single('audio'), async (req:
             return res.status(400).json({ error: 'No audio file provided' });
         }
 
+        // Dev Mode: return dummy transcription
+        const { getDatabase } = await import('../db-mgmt');
+        const devDb = getDatabase();
+        const devClient = devDb.prepare('SELECT dev_mode, dev_mode_delay_ms FROM clients WHERE id = ?').get(clientId!) as any;
+        if (devClient?.dev_mode) {
+            const { delay, getDevModeData } = await import('../lib/ai/dev-mode');
+            const duration = parseFloat(req.body.duration) || 30;
+            await delay(devClient.dev_mode_delay_ms || 5000);
+            const dummy = await getDevModeData('transcription', duration, clientId!);
+            return res.json(dummy);
+        }
+
         // Get client-specific API key
         const apiKey = await getClientApiKey(clientId!, 'openai');
         
@@ -169,6 +181,18 @@ aiRouter.post('/openrouter', licenseMiddleware, async (req: LicensedRequest, res
             clientName,
             moduleName
         });
+
+        // Dev Mode: return dummy analysis
+        const { getDatabase } = await import('../db-mgmt');
+        const devDb = getDatabase();
+        const devClient = devDb.prepare('SELECT dev_mode, dev_mode_delay_ms FROM clients WHERE id = ?').get(clientId!) as any;
+        if (devClient?.dev_mode) {
+            const { delay, getDevModeData } = await import('../lib/ai/dev-mode');
+            const duration = parseFloat(req.body.duration) || 30;
+            await delay(devClient.dev_mode_delay_ms || 5000);
+            const dummy = await getDevModeData(moduleName, duration, clientId!);
+            return res.json(dummy);
+        }
 
         // Get client-specific API key
         const apiKey = await getClientApiKey(clientId!, 'openrouter');

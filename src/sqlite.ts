@@ -468,11 +468,47 @@ function createTables() {
         `ALTER TABLE ai_jobs ADD COLUMN queue_status TEXT DEFAULT 'pending'`,
         `ALTER TABLE ai_jobs ADD COLUMN priority INTEGER DEFAULT 0`,
         `ALTER TABLE clients ADD COLUMN allowed_ips TEXT`,
-        `ALTER TABLE clients ADD COLUMN blocked_ips TEXT`
+        `ALTER TABLE clients ADD COLUMN blocked_ips TEXT`,
+        `ALTER TABLE clients ADD COLUMN dev_mode INTEGER DEFAULT 0`,
+        `ALTER TABLE clients ADD COLUMN dev_mode_delay_ms INTEGER DEFAULT 5000`,
+        `ALTER TABLE clients ADD COLUMN dev_record_billing INTEGER DEFAULT 0`
     ];
     for (const sql of migrations) {
         try { db.exec(sql); } catch (_) { /* column already exists */ }
     }
+
+    try { db.exec(`
+        CREATE TABLE IF NOT EXISTS dev_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL,
+            module_name TEXT NOT NULL,
+            duration_min REAL DEFAULT 0,
+            duration_max REAL DEFAULT 0,
+            template_data TEXT NOT NULL,
+            client_id INTEGER,
+            is_system INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+    `); } catch (_) {}
+
+    try { db.exec(`
+        CREATE TABLE IF NOT EXISTS dev_template_clients (
+            template_id INTEGER NOT NULL,
+            client_id INTEGER NOT NULL,
+            PRIMARY KEY (template_id, client_id),
+            FOREIGN KEY (template_id) REFERENCES dev_templates(id) ON DELETE CASCADE
+        );
+    `); } catch (_) {}
+
+    // Migrate existing client_id values into dev_template_clients
+    try {
+        const rows = db.prepare('SELECT id, client_id FROM dev_templates WHERE client_id IS NOT NULL').all() as { id: number; client_id: number }[];
+        const insert = db.prepare('INSERT OR IGNORE INTO dev_template_clients (template_id, client_id) VALUES (?, ?)');
+        for (const r of rows) {
+            insert.run(r.id, r.client_id);
+        }
+    } catch (_) {}
 
     try { db.exec("ALTER TABLE admin_users RENAME COLUMN email TO username;"); } catch(e) {}
     try { db.exec("ALTER TABLE users RENAME COLUMN email TO username;"); } catch(e) {}
@@ -724,6 +760,25 @@ function seedDefaultData() {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     `);
+
+    // Seed default dev templates
+    try {
+        const { getSeedTemplates } = require('./lib/ai/dev-mode');
+        const existingCount = db.prepare('SELECT COUNT(*) as count FROM dev_templates WHERE is_system = 1').get() as { count: number };
+        if (existingCount.count === 0) {
+            const insert = db.prepare(`
+                INSERT INTO dev_templates (label, module_name, duration_min, duration_max, template_data, is_system)
+                VALUES (?, ?, ?, ?, ?, 1)
+            `);
+            const templates = getSeedTemplates();
+            for (const t of templates) {
+                insert.run(t.label, t.module_name, t.duration_min, t.duration_max, JSON.stringify(t.template_data));
+            }
+            console.log(`[SQLite] Seeded ${templates.length} default dev mode templates`);
+        }
+    } catch (e: any) {
+        console.error('[SQLite] Failed to seed dev templates:', e.message);
+    }
 }
 
 export function closeDatabase() {

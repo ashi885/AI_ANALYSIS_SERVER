@@ -74,7 +74,10 @@ function createTables() {
             provider_bal_openai REAL DEFAULT 0,
             provider_bal_openrouter REAL DEFAULT 0,
             provider_warn_threshold REAL DEFAULT 25.0,
-            allow_rate_card_fetch INTEGER DEFAULT 0
+            allow_rate_card_fetch INTEGER DEFAULT 0,
+            queue_paused INTEGER DEFAULT 0,
+            allowed_ips TEXT,
+            blocked_ips TEXT
         );
 
         CREATE TABLE IF NOT EXISTS client_api_keys (
@@ -191,6 +194,19 @@ function createTables() {
         try {
             db.prepare("ALTER TABLE ai_jobs ADD COLUMN target_languages TEXT").run();
             console.log('[SQLite] MIGRATION SUCCESS: target_languages column added.');
+        }
+        catch (err) {
+            console.error('[SQLite] MIGRATION FAILED:', err.message);
+        }
+    }
+    // Migration: Add queue_paused to clients table
+    const clientsInfo = db.prepare("PRAGMA table_info(clients)").all();
+    const hasQueuePaused = clientsInfo.some(col => col.name === 'queue_paused');
+    if (!hasQueuePaused) {
+        console.log('[SQLite] MIGRATION: Adding queue_paused column to clients table...');
+        try {
+            db.prepare("ALTER TABLE clients ADD COLUMN queue_paused INTEGER DEFAULT 0").run();
+            console.log('[SQLite] MIGRATION SUCCESS: queue_paused column added.');
         }
         catch (err) {
             console.error('[SQLite] MIGRATION FAILED:', err.message);
@@ -321,6 +337,36 @@ function createTables() {
             FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS client_auth_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            credential_id TEXT UNIQUE NOT NULL,
+            credential_secret_hash TEXT NOT NULL,
+            description TEXT DEFAULT 'API Credentials',
+            is_active INTEGER DEFAULT 1,
+            last_used_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_client_auth_creds_client ON client_auth_credentials(client_id);
+
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            jti TEXT UNIQUE NOT NULL,
+            client_id INTEGER NOT NULL,
+            credential_id INTEGER,
+            token_type TEXT NOT NULL CHECK(token_type IN ('access', 'refresh')),
+            expires_at DATETIME NOT NULL,
+            revoked_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+            FOREIGN KEY (credential_id) REFERENCES client_auth_credentials(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_auth_tokens_jti ON auth_tokens(jti);
+        CREATE INDEX IF NOT EXISTS idx_auth_tokens_client ON auth_tokens(client_id, token_type);
+
         CREATE TABLE IF NOT EXISTS admin_users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
@@ -416,7 +462,12 @@ function createTables() {
         `ALTER TABLE client_usage_logs ADD COLUMN duration_seconds REAL DEFAULT 0`,
         `ALTER TABLE ai_jobs ADD COLUMN file_duration REAL DEFAULT 0`,
         `ALTER TABLE ai_jobs ADD COLUMN queue_status TEXT DEFAULT 'pending'`,
-        `ALTER TABLE ai_jobs ADD COLUMN priority INTEGER DEFAULT 0`
+        `ALTER TABLE ai_jobs ADD COLUMN priority INTEGER DEFAULT 0`,
+        `ALTER TABLE clients ADD COLUMN allowed_ips TEXT`,
+        `ALTER TABLE clients ADD COLUMN blocked_ips TEXT`,
+        `ALTER TABLE clients ADD COLUMN dev_mode INTEGER DEFAULT 0`,
+        `ALTER TABLE clients ADD COLUMN dev_mode_delay_ms INTEGER DEFAULT 5000`,
+        `ALTER TABLE clients ADD COLUMN dev_record_billing INTEGER DEFAULT 0`
     ];
     for (const sql of migrations) {
         try {
@@ -424,6 +475,43 @@ function createTables() {
         }
         catch (_) { /* column already exists */ }
     }
+    try {
+        db.exec(`
+        CREATE TABLE IF NOT EXISTS dev_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL,
+            module_name TEXT NOT NULL,
+            duration_min REAL DEFAULT 0,
+            duration_max REAL DEFAULT 0,
+            template_data TEXT NOT NULL,
+            client_id INTEGER,
+            is_system INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+    `);
+    }
+    catch (_) { }
+    try {
+        db.exec(`
+        CREATE TABLE IF NOT EXISTS dev_template_clients (
+            template_id INTEGER NOT NULL,
+            client_id INTEGER NOT NULL,
+            PRIMARY KEY (template_id, client_id),
+            FOREIGN KEY (template_id) REFERENCES dev_templates(id) ON DELETE CASCADE
+        );
+    `);
+    }
+    catch (_) { }
+    // Migrate existing client_id values into dev_template_clients
+    try {
+        const rows = db.prepare('SELECT id, client_id FROM dev_templates WHERE client_id IS NOT NULL').all();
+        const insert = db.prepare('INSERT OR IGNORE INTO dev_template_clients (template_id, client_id) VALUES (?, ?)');
+        for (const r of rows) {
+            insert.run(r.id, r.client_id);
+        }
+    }
+    catch (_) { }
     try {
         db.exec("ALTER TABLE admin_users RENAME COLUMN email TO username;");
     }
@@ -667,6 +755,25 @@ function seedDefaultData() {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     `);
+    // Seed default dev templates
+    try {
+        const { getSeedTemplates } = require('./lib/ai/dev-mode');
+        const existingCount = db.prepare('SELECT COUNT(*) as count FROM dev_templates WHERE is_system = 1').get();
+        if (existingCount.count === 0) {
+            const insert = db.prepare(`
+                INSERT INTO dev_templates (label, module_name, duration_min, duration_max, template_data, is_system)
+                VALUES (?, ?, ?, ?, ?, 1)
+            `);
+            const templates = getSeedTemplates();
+            for (const t of templates) {
+                insert.run(t.label, t.module_name, t.duration_min, t.duration_max, JSON.stringify(t.template_data));
+            }
+            console.log(`[SQLite] Seeded ${templates.length} default dev mode templates`);
+        }
+    }
+    catch (e) {
+        console.error('[SQLite] Failed to seed dev templates:', e.message);
+    }
 }
 function closeDatabase() {
     if (db) {

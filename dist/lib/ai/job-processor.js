@@ -15,13 +15,23 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -36,6 +46,7 @@ const db_mgmt_1 = require("../../db-mgmt");
 const license_1 = require("../../middleware/license");
 const analyze_1 = require("../../routes/analyze");
 const logger_1 = require("../../logger");
+const dev_logger_1 = require("./dev-logger");
 // Job Processor logic
 async function processAiJob(jobId, audioPath, modulesRequested, clientId, clientName, durationRequested = null, targetLanguages, abortSignal) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
@@ -74,6 +85,114 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
         }
     };
     try {
+        // Dev Mode: return dummy data for all modules
+        const devClient = db.prepare('SELECT dev_mode, dev_mode_delay_ms, dev_record_billing, module_rates FROM clients WHERE id = ?').get(clientId);
+        if (devClient === null || devClient === void 0 ? void 0 : devClient.dev_mode) {
+            dev_logger_1.devLogger.info(jobId, `START clientId=${clientId} duration=${durationRequested || 0}s modules=[${modulesRequested.join(',')}] languages=[${(targetLanguages || []).join(',')}] module_rates=${dev_logger_1.devLogger.preview(devClient.module_rates || 'not set')} dev_record_billing=${devClient.dev_record_billing ? 1 : 0}`);
+            const { delay, getDevModeData, calculateDevCost } = await Promise.resolve().then(() => __importStar(require('./dev-mode')));
+            const totalModules = modulesRequested.length;
+            const resultData = [];
+            let totalBilled = 0;
+            for (let i = 0; i < totalModules; i++) {
+                const mod = modulesRequested[i];
+                const modDuration = durationRequested || 0;
+                if (abortSignal === null || abortSignal === void 0 ? void 0 : abortSignal.aborted)
+                    throw new Error('AbortError');
+                if (mod === 'subtitle_translation') {
+                    const rawLangs = targetLanguages || ['ko'];
+                    const languages = Array.isArray(rawLangs) ? rawLangs : [rawLangs];
+                    const langMap = { 'korean': 'ko', 'chinese': 'zh', 'english': 'en', 'eng': 'en', 'kor': 'ko', 'zho': 'zh', 'zhongwen': 'zh' };
+                    const sourceLanguage = 'en';
+                    for (const lang of languages) {
+                        const normalizedLang = langMap[lang.toLowerCase()] || lang.toLowerCase().slice(0, 2);
+                        if (normalizedLang === sourceLanguage) {
+                            dev_logger_1.devLogger.info(jobId, `  SKIP subtitle_translation (${normalizedLang}) == source language`);
+                            continue;
+                        }
+                        const langModule = `subtitle_translation_${normalizedLang}`;
+                        const langCost = devClient.dev_record_billing ? calculateDevCost(devClient.module_rates, 'subtitle_translation') : 0;
+                        db.prepare('UPDATE ai_jobs SET sub_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(`Dev mode (${i + 1}/${totalModules}): subtitle_translation (${normalizedLang})`, jobId);
+                        await delay(devClient.dev_mode_delay_ms || 5000);
+                        const dummy = await getDevModeData(langModule, modDuration, clientId);
+                        const resType = `subtitle_${normalizedLang}`;
+                        const resData = dummy.content || dummy;
+                        const costLabel = devClient.dev_record_billing ? `cost=$${langCost.toFixed(4)}` : 'cost=$0 (dev_mode, no billing)';
+                        resultData.push({
+                            module_name: 'subtitle_translation',
+                            result_type: resType,
+                            result_data: typeof resData === 'string' ? resData : JSON.stringify(resData),
+                            processing_time_ms: devClient.dev_mode_delay_ms || 5000,
+                            api_cost: langCost,
+                            providerCost: 0
+                        });
+                        dev_logger_1.devLogger.info(jobId, `  MODULE subtitle_translation (${normalizedLang}) => ${resType} | ${costLabel} | ${dev_logger_1.devLogger.preview(resData)}`);
+                        if (devClient.dev_record_billing)
+                            totalBilled += langCost;
+                    }
+                }
+                else {
+                    const modCost = devClient.dev_record_billing ? calculateDevCost(devClient.module_rates, mod) : 0;
+                    db.prepare('UPDATE ai_jobs SET sub_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(`Dev mode (${i + 1}/${totalModules}): ${mod}`, jobId);
+                    await delay(devClient.dev_mode_delay_ms || 5000);
+                    const dummy = await getDevModeData(mod, modDuration, clientId);
+                    if (dummy.isMultiResult && dummy.results) {
+                        for (const r of dummy.results) {
+                            const resModuleName = r.moduleName || mod;
+                            const resType = r.resultType || resModuleName;
+                            const resData = r.resultData || r.content;
+                            const costLabel = devClient.dev_record_billing ? `cost=$${modCost.toFixed(4)}` : 'cost=$0 (dev_mode, no billing)';
+                            resultData.push({
+                                module_name: resModuleName,
+                                result_type: resType,
+                                result_data: typeof resData === 'string' ? resData : JSON.stringify(resData),
+                                processing_time_ms: devClient.dev_mode_delay_ms || 5000,
+                                api_cost: modCost,
+                                providerCost: 0
+                            });
+                            dev_logger_1.devLogger.info(jobId, `  MODULE ${resModuleName} => ${resType} (multi-result) | ${costLabel} | ${dev_logger_1.devLogger.preview(resData)}`);
+                        }
+                    }
+                    else {
+                        let content = dummy.content;
+                        if (content === undefined)
+                            content = dummy;
+                        if (typeof content === 'string') {
+                            try {
+                                content = JSON.parse(content);
+                            }
+                            catch (_o) {
+                                content = { raw: content };
+                            }
+                        }
+                        const costLabel = devClient.dev_record_billing ? `cost=$${modCost.toFixed(4)}` : 'cost=$0 (dev_mode, no billing)';
+                        resultData.push({
+                            module_name: mod,
+                            result_type: mod,
+                            result_data: JSON.stringify(content),
+                            processing_time_ms: (devClient.dev_mode_delay_ms || 5000),
+                            api_cost: modCost,
+                            providerCost: 0
+                        });
+                        dev_logger_1.devLogger.info(jobId, `  MODULE ${mod} | ${costLabel} | ${dev_logger_1.devLogger.preview(content)}`);
+                    }
+                    if (devClient.dev_record_billing)
+                        totalBilled += modCost;
+                }
+            }
+            resultData.push({
+                module_name: '_dev_mode_meta',
+                result_type: 'dev_mode',
+                result_data: JSON.stringify({ billing_type: 'dev_mode', total_billed_usd: totalBilled }),
+                processing_time_ms: 0,
+                api_cost: 0,
+                providerCost: 0
+            });
+            db.prepare('UPDATE ai_jobs SET result_data = ?, total_cost_usd = ?, status = ?, queue_status = ?, sub_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+                .run(JSON.stringify(resultData), totalBilled, 'completed', 'completed', 'Dev mode completed', jobId);
+            const billingNote = devClient.dev_record_billing ? `DEV MODE (not deducted)` : `DEV MODE (no billing configured)`;
+            dev_logger_1.devLogger.info(jobId, `COMPLETE results=${resultData.length} billed=$${totalBilled.toFixed(4)} [${billingNote}]`);
+            return;
+        }
         // Check for existing results - useful for partial reruns
         const existingJob = db.prepare('SELECT result_data FROM ai_jobs WHERE id = ?').get(jobId);
         const existingResults = (existingJob === null || existingJob === void 0 ? void 0 : existingJob.result_data) ? JSON.parse(existingJob.result_data) : [];
@@ -905,7 +1024,7 @@ async function processAiJob(jobId, audioPath, modulesRequested, clientId, client
             try {
                 fs_1.default.unlinkSync(audioPath);
             }
-            catch (_o) { }
+            catch (_p) { }
         }
         else if (failedModules.length > 0) {
             logger_1.logger.ai('AI_AUDIO_RETAINED', `Job ${jobId} audio retained for rerunning failed modules: ${failedModules.join(', ')}`, { clientId });

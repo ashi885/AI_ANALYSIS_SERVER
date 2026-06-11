@@ -3,7 +3,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.logsRouter = void 0;
 const express_1 = require("express");
 const logger_1 = require("../logger");
+const auth_1 = require("../middleware/auth");
+const access_logger_1 = require("../utils/access-logger");
 exports.logsRouter = (0, express_1.Router)();
+// All log endpoints require admin authentication
+exports.logsRouter.use(auth_1.requireAdminAuth);
 exports.logsRouter.get('/search-all', (req, res) => {
     const level = req.query.level;
     const category = req.query.category;
@@ -109,4 +113,32 @@ exports.logsRouter.get('/stats', (req, res) => {
         }
     }
     res.json({ date, stats });
+});
+// Access log endpoints (separate from app logs)
+exports.logsRouter.get('/access/dates', (req, res) => {
+    const dates = (0, access_logger_1.getAccessLogDates)();
+    res.json({ dates });
+});
+exports.logsRouter.get('/access', (req, res) => {
+    const date = req.query.date || new Date().toISOString().split('T')[0];
+    const ip = req.query.ip;
+    const blocked = req.query.blocked;
+    const statusFilter = req.query.status;
+    const limit = parseInt(req.query.limit) || 200;
+    const offset = parseInt(req.query.offset) || 0;
+    let entries = (0, access_logger_1.getAccessLogsForDate)(date);
+    if (ip)
+        entries = entries.filter(e => e.ip.includes(ip));
+    if (blocked !== undefined)
+        entries = entries.filter(e => blocked === 'true' ? !!e.blocked : !e.blocked);
+    if (statusFilter)
+        entries = entries.filter(e => String(e.statusCode) === statusFilter);
+    const paginated = entries.slice(offset, offset + limit);
+    res.json({
+        date,
+        total: entries.length,
+        limit,
+        offset,
+        entries: paginated
+    });
 });

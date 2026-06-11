@@ -371,6 +371,18 @@ analyzeRouter.post('/analyze', licenseMiddleware, async (req: LicensedRequest, r
 
         const transcriptStr = normalizeTranscript(transcript);
 
+        // Dev Mode: return dummy analysis
+        const { getDatabase } = await import('../db-mgmt');
+        const devDb = getDatabase();
+        const devClient = devDb.prepare('SELECT dev_mode, dev_mode_delay_ms FROM clients WHERE id = ?').get(clientId!) as any;
+        if (devClient?.dev_mode) {
+            const { delay, getDevModeData } = await import('../lib/ai/dev-mode');
+            const duration = Number(body.duration) || 30;
+            await delay(devClient.dev_mode_delay_ms || 5000);
+            const dummy = await getDevModeData(moduleName || 'metadata', duration, clientId!);
+            return res.json(dummy);
+        }
+
         // Log incoming request
         logAIRequest({
             clientId: clientId!,
@@ -551,6 +563,18 @@ analyzeRouter.post('/module/:moduleName', licenseMiddleware, async (req: License
 
         if (!transcript) {
             return res.status(400).json({ error: 'Transcript is required' });
+        }
+
+        // Dev Mode: return dummy data
+        const { getDatabase } = await import('../db-mgmt');
+        const devDb = getDatabase();
+        const devClient = devDb.prepare('SELECT dev_mode, dev_mode_delay_ms FROM clients WHERE id = ?').get(clientId!) as any;
+        if (devClient?.dev_mode) {
+            const { delay, getDevModeData } = await import('../lib/ai/dev-mode');
+            const duration = Number(body.duration) || 30;
+            await delay(devClient.dev_mode_delay_ms || 5000);
+            const dummy = await getDevModeData(moduleName, duration, clientId!);
+            return res.json(dummy);
         }
 
         const transcriptStr = normalizeTranscript(transcript);

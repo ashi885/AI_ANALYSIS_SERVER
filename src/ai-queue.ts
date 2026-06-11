@@ -287,6 +287,42 @@ async function runAILogic(clientId: number, moduleName: string, payload: any, qu
     
     // Support for duration-based tiered pricing in async jobs
     const duration = Number(payload.duration) || 0;
+
+    // --- DEV MODE CHECK ---
+    if (clientInfo?.dev_mode) {
+        const devDelay = clientInfo.dev_mode_delay_ms || 5000;
+        const { delay, getDevModeData, calculateDevCost } = await import('./lib/ai/dev-mode');
+        const devCost = clientInfo.dev_record_billing ? calculateDevCost(clientInfo.module_rates, moduleName) : 0;
+        db.prepare(`UPDATE ai_job_queue SET sub_status = 'Dev mode: generating dummy data...', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(queueJobId);
+        await delay(devDelay);
+        const dummyResult = await getDevModeData(moduleName, duration, clientId);
+
+        // Handle multi-result (subtitle_translation returns isMultiResult)
+        if (dummyResult.isMultiResult) {
+            for (const r of (dummyResult.results || [])) {
+                await logClientUsage({
+                    clientId, jobId: payload.jobId, userId: payload.userId,
+                    moduleName: r.moduleName, provider: 'dev_mode',
+                    model: 'dev-mode', status: 'success', costUsd: devCost,
+                    actualCostUsd: 0, tokensUsed: 0, latencyMs: Date.now() - startTime,
+                    requestId: r.requestId, durationSeconds: duration
+                });
+            }
+        } else {
+            await logClientUsage({
+                clientId, jobId: payload.jobId, userId: payload.userId,
+                moduleName, provider: 'dev_mode',
+                model: 'dev-mode', status: 'success', costUsd: devCost,
+                actualCostUsd: 0, tokensUsed: 0, latencyMs: Date.now() - startTime,
+                requestId: dummyResult.requestId, durationSeconds: duration
+            });
+        }
+
+        db.prepare(`UPDATE ai_job_queue SET sub_status = 'Dev mode completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(queueJobId);
+        dummyResult.cost = devCost;
+        return dummyResult;
+    }
+
     const pricing = await getModulePricing(clientId, moduleName, duration);
     const moduleCost = pricing?.cost_per_job || 0;
     

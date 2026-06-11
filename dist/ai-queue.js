@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -92,8 +125,17 @@ async function processMainPipeline() {
             acc[job.client_id] = (acc[job.client_id] || 0) + 1;
             return acc;
         }, {});
+        const { getSystemSetting } = await Promise.resolve().then(() => __importStar(require('./db-mgmt')));
+        const globalPaused = parseInt(getSystemSetting('global_queue_paused') || '0');
+        if (globalPaused)
+            return;
         // 2. Get pending jobs, ordered by priority DESC, then oldest first
-        const pendingJobs = db.prepare(`SELECT * FROM ai_jobs WHERE queue_status = 'pending' ORDER BY priority DESC, created_at ASC`).all();
+        const pendingJobs = db.prepare(`
+            SELECT j.* FROM ai_jobs j
+            JOIN clients c ON j.client_id = c.id
+            WHERE j.queue_status = 'pending' AND COALESCE(c.queue_paused, 0) = 0
+            ORDER BY j.priority DESC, j.created_at ASC
+        `).all();
         for (const job of pendingJobs) {
             if (activeJobs.length >= MAX_GLOBAL_CONCURRENT)
                 break;
@@ -156,7 +198,16 @@ async function processQueue() {
     if (isProcessing)
         return; // Prevent overlapping runs
     const db = (0, db_mgmt_1.getDatabase)();
-    const nextJob = db.prepare(`SELECT * FROM ai_job_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1`).get();
+    const { getSystemSetting } = await Promise.resolve().then(() => __importStar(require('./db-mgmt')));
+    const globalPaused = parseInt(getSystemSetting('global_queue_paused') || '0');
+    if (globalPaused)
+        return;
+    const nextJob = db.prepare(`
+        SELECT q.* FROM ai_job_queue q
+        JOIN clients c ON q.client_id = c.id
+        WHERE q.status = 'pending' AND COALESCE(c.queue_paused, 0) = 0
+        ORDER BY q.created_at ASC LIMIT 1
+    `).get();
     if (!nextJob)
         return;
     isProcessing = true;
@@ -245,6 +296,39 @@ async function runAILogic(clientId, moduleName, payload, queueJobId) {
     const billingType = (clientInfo === null || clientInfo === void 0 ? void 0 : clientInfo.billing_type) || 'PER_REQUEST';
     // Support for duration-based tiered pricing in async jobs
     const duration = Number(payload.duration) || 0;
+    // --- DEV MODE CHECK ---
+    if (clientInfo === null || clientInfo === void 0 ? void 0 : clientInfo.dev_mode) {
+        const devDelay = clientInfo.dev_mode_delay_ms || 5000;
+        const { delay, getDevModeData, calculateDevCost } = await Promise.resolve().then(() => __importStar(require('./lib/ai/dev-mode')));
+        const devCost = clientInfo.dev_record_billing ? calculateDevCost(clientInfo.module_rates, moduleName) : 0;
+        db.prepare(`UPDATE ai_job_queue SET sub_status = 'Dev mode: generating dummy data...', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(queueJobId);
+        await delay(devDelay);
+        const dummyResult = await getDevModeData(moduleName, duration, clientId);
+        // Handle multi-result (subtitle_translation returns isMultiResult)
+        if (dummyResult.isMultiResult) {
+            for (const r of (dummyResult.results || [])) {
+                await (0, db_mgmt_1.logClientUsage)({
+                    clientId, jobId: payload.jobId, userId: payload.userId,
+                    moduleName: r.moduleName, provider: 'dev_mode',
+                    model: 'dev-mode', status: 'success', costUsd: devCost,
+                    actualCostUsd: 0, tokensUsed: 0, latencyMs: Date.now() - startTime,
+                    requestId: r.requestId, durationSeconds: duration
+                });
+            }
+        }
+        else {
+            await (0, db_mgmt_1.logClientUsage)({
+                clientId, jobId: payload.jobId, userId: payload.userId,
+                moduleName, provider: 'dev_mode',
+                model: 'dev-mode', status: 'success', costUsd: devCost,
+                actualCostUsd: 0, tokensUsed: 0, latencyMs: Date.now() - startTime,
+                requestId: dummyResult.requestId, durationSeconds: duration
+            });
+        }
+        db.prepare(`UPDATE ai_job_queue SET sub_status = 'Dev mode completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(queueJobId);
+        dummyResult.cost = devCost;
+        return dummyResult;
+    }
     const pricing = await (0, db_mgmt_1.getModulePricing)(clientId, moduleName, duration);
     const moduleCost = (pricing === null || pricing === void 0 ? void 0 : pricing.cost_per_job) || 0;
     if (billingType === 'CREDIT' && ((clientInfo === null || clientInfo === void 0 ? void 0 : clientInfo.credits) || 0) < moduleCost) {

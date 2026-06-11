@@ -63,18 +63,33 @@ export { requireAdminAuth };
  * over the deprecated ?apiKey= query parameter, or extract from JWT Bearer token.
  */
 function getClientApiKey(req: Request): string | undefined {
+    const db = getDatabase();
+
+    let rawKey: string | undefined;
     const headerKey = req.header('X-Client-API-Key');
-    if (headerKey) return headerKey;
-    const queryKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
-    if (queryKey) {
-        console.warn('[DEPRECATED] ?apiKey= query param is deprecated. Use X-Client-API-Key header.');
-        return queryKey;
+    if (headerKey) {
+        rawKey = headerKey;
+    } else {
+        const queryKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+        if (queryKey) {
+            console.warn('[DEPRECATED] ?apiKey= query param is deprecated. Use X-Client-API-Key header.');
+            rawKey = queryKey;
+        }
     }
+
+    if (rawKey) {
+        const client = db.prepare('SELECT id, api_key, allowed_ips, blocked_ips FROM clients WHERE api_key = ?').get(rawKey) as { id: number; api_key: string; allowed_ips: string | null; blocked_ips: string | null } | undefined;
+        if (!client) return undefined;
+        const ip = getClientIp(req);
+        const result = checkIpAccess(ip, client.allowed_ips, client.blocked_ips);
+        if (!result.allowed) return undefined;
+        return client.api_key;
+    }
+
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
         const payload = verifyToken(authHeader.slice(7));
         if (payload) {
-            const db = getDatabase();
             const client = db.prepare('SELECT api_key, allowed_ips, blocked_ips FROM clients WHERE id = ?').get(payload.sub) as { api_key: string; allowed_ips: string | null; blocked_ips: string | null } | undefined;
             if (client) {
                 const ip = getClientIp(req);
@@ -256,6 +271,9 @@ mgmtRouter.put('/clients/:id', requireAdminAuth, async (req: Request, res: Respo
             maintenance_mode: 'maintenance_mode = ?',
             allowed_ips: 'allowed_ips = ?',
             blocked_ips: 'blocked_ips = ?',
+            dev_mode: 'dev_mode = ?',
+            dev_mode_delay_ms: 'dev_mode_delay_ms = ?',
+            dev_record_billing: 'dev_record_billing = ?',
         };
 
         const FIELD_VALUE_MAP: Record<string, (v: any) => any> = {
@@ -265,6 +283,9 @@ mgmtRouter.put('/clients/:id', requireAdminAuth, async (req: Request, res: Respo
             contract_end: (v) => (v || null),
             allowed_ips: (v) => (v || null),
             blocked_ips: (v) => (v || null),
+            dev_mode: (v) => (v ? 1 : 0),
+            dev_mode_delay_ms: (v) => (parseInt(v) || 5000),
+            dev_record_billing: (v) => (v ? 1 : 0),
         };
 
         const sets: string[] = [];
@@ -814,37 +835,19 @@ mgmtRouter.get('/clients/credentials', async (req: Request, res: Response) => {
         const client = db.prepare('SELECT * FROM clients WHERE api_key = ?').get(apiKey) as any;
         if (!client) return res.status(404).json({ error: 'Client not found' });
 
-        // Get credentials from clients table
-        const creds = {
-            supabase_url: client.supabase_url || null,
-            supabase_anon_key: client.supabase_anon_key || null
-        };
-
-        // Get API keys for client
-        const keys = await getClientApiKeys(client.id);
-        const modelsRow = db.prepare('SELECT * FROM client_models WHERE client_id = ?').all(client.id);
-        const models = modelsRow || [];
-        const rawProviderLabels = await getProviderLabels();
-
-        const genericProviderLabels: Record<string, string> = {
-            'openai': 'ai_service_primary',
-            'openrouter': 'ai_service_secondary'
-        };
-
-        const sanitizedApiKeys: Record<string, string> = {};
-        keys.forEach((k: any) => {
-            if (k.is_active) {
-                const genericProvider = genericProviderLabels[k.provider] || k.provider;
-                sanitizedApiKeys[genericProvider] = k.api_key;
-            }
-        });
-
-        // Sanitize providerLabels keys
-        const sanitizedProviderLabels: Record<string, string> = {};
-        Object.entries(rawProviderLabels || {}).forEach(([provider, label]) => {
-            const genericProvider = genericProviderLabels[provider] || provider;
-            sanitizedProviderLabels[genericProvider] = label as string;
-        });
+        // [COMMENTED OUT - sensitive data not sent to client]
+        // const creds = { supabase_url: client.supabase_url || null, supabase_anon_key: client.supabase_anon_key || null };
+        // const keys = await getClientApiKeys(client.id);
+        // const modelsRow = db.prepare('SELECT * FROM client_models WHERE client_id = ?').all(client.id);
+        // const models = modelsRow || [];
+        // const rawProviderLabels = await getProviderLabels();
+        // const genericProviderLabels: Record<string, string> = { 'openai': 'ai_service_primary', 'openrouter': 'ai_service_secondary' };
+        // const sanitizedApiKeys: Record<string, string> = {};
+        // keys.forEach((k: any) => { if (k.is_active) { sanitizedApiKeys[genericProviderLabels[k.provider] || k.provider] = k.api_key; } });
+        // const sanitizedProviderLabels: Record<string, string> = {};
+        // Object.entries(rawProviderLabels || {}).forEach(([provider, label]) => { sanitizedProviderLabels[genericProviderLabels[provider] || provider] = label as string; });
+        // const sanitizedModels: any[] = [];
+        // if (Array.isArray(models)) { models.forEach((m: any) => { ... }); }
 
         // Parse module_rates from client (only if fetching is allowed)
         let moduleRates: Record<string, any> = {};
@@ -856,46 +859,14 @@ mgmtRouter.get('/clients/credentials', async (req: Request, res: Response) => {
             }
         }
 
-        // Sanitize models array (handle both old array format and new table format)
-        const sanitizedModels: any[] = [];
-        if (Array.isArray(models)) {
-            models.forEach((m: any) => {
-                if (m.models && Array.isArray(m.models)) {
-                    // Old format with models JSON column
-                    m.models.forEach((mm: any) => {
-                        const genericProvider = genericProviderLabels[mm.api_provider] || mm.api_provider;
-                        sanitizedModels.push({
-                            module_name: mm.module_name,
-                            api_provider: genericProvider,
-                            api_model: mm.api_model
-                        });
-                    });
-                } else {
-                    // New table format
-                    const genericProvider = genericProviderLabels[m.api_provider] || m.api_provider;
-                    sanitizedModels.push({
-                        module_name: m.module_name,
-                        api_provider: genericProvider,
-                        api_model: m.api_model
-                    });
-                }
-            });
-        }
-
         res.json({
-            apiKeys: sanitizedApiKeys,
-            maskedApiKeys: keys.reduce((acc: any, k: any) => { 
-                if (k.is_active) {
-                    const genericProvider = genericProviderLabels[k.provider] || k.provider;
-                    acc[genericProvider] = k.api_key_prefix; 
-                }
-                return acc; 
-            }, {}),
-            configuredModels: sanitizedModels,
-            providerLabels: sanitizedProviderLabels,
+            // apiKeys: sanitizedApiKeys,           // REMOVED - leaks full API keys to client
+            // maskedApiKeys: keys.reduce(...),      // REMOVED - unnecessary
+            // configuredModels: sanitizedModels,    // REMOVED - model config handled server-side
+            // providerLabels: sanitizedProviderLabels, // REMOVED - server-side concern
             moduleRates,
-            supabaseUrl: creds?.supabase_url || null,
-            supabaseAnonKey: creds?.supabase_anon_key || null
+            // supabaseUrl: creds?.supabase_url || null,  // REMOVED - should never leak
+            // supabaseAnonKey: creds?.supabase_anon_key || null // REMOVED - should never leak
         });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -2038,6 +2009,183 @@ mgmtRouter.post('/queue/pause/client/:id', requireAdminAuth, async (req: Request
         const newStatus = client.queue_paused ? 0 : 1;
         db.prepare('UPDATE clients SET queue_paused = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStatus, clientId);
         res.json({ success: true, paused: !!newStatus });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ── Dev Mode Template CRUD ──
+
+mgmtRouter.get('/dev/templates', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const db = getDatabase();
+        const moduleFilter = req.query.module ? req.query.module as string : null;
+        const clientFilter = req.query.client_id ? req.query.client_id as string : null;
+
+        let sql = `SELECT dt.*, GROUP_CONCAT(dtc.client_id) as client_ids_csv FROM dev_templates dt LEFT JOIN dev_template_clients dtc ON dt.id = dtc.template_id WHERE 1=1`;
+        const params: any[] = [];
+        if (moduleFilter) { sql += ` AND dt.module_name = ?`; params.push(moduleFilter); }
+        if (clientFilter) { sql += ` AND dtc.client_id = ?`; params.push(parseInt(clientFilter)); }
+
+        sql += ` GROUP BY dt.id ORDER BY dt.module_name, dt.duration_min`;
+        const templates = (db.prepare(sql).all(...params) as any[]).map(t => ({
+            ...t,
+            client_ids: t.client_ids_csv ? t.client_ids_csv.split(',').map(Number) : [],
+            client_name: undefined,
+            client_ids_csv: undefined,
+        }));
+        // Enrich with client names
+        const clientNames = db.prepare('SELECT id, name FROM clients').all() as { id: number; name: string }[];
+        const nameMap = Object.fromEntries(clientNames.map(c => [c.id, c.name]));
+        for (const t of templates) {
+            t.client_names = t.client_ids.map((id: number) => nameMap[id] || `#${id}`).join(', ');
+        }
+        res.json(templates || []);
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.get('/dev/templates/clients', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const db = getDatabase();
+        const templates = db.prepare(`
+            SELECT dt.*, GROUP_CONCAT(dtc.client_id) as client_ids_csv
+            FROM dev_templates dt
+            JOIN dev_template_clients dtc ON dt.id = dtc.template_id
+            GROUP BY dt.id
+            ORDER BY dt.module_name, dt.duration_min
+        `).all() as any[];
+        const result = templates.map(t => ({
+            ...t,
+            client_ids: t.client_ids_csv ? t.client_ids_csv.split(',').map(Number) : [],
+            client_ids_csv: undefined,
+        }));
+        const clientNames = db.prepare('SELECT id, name FROM clients').all() as { id: number; name: string }[];
+        const nameMap = Object.fromEntries(clientNames.map(c => [c.id, c.name]));
+        for (const t of result) {
+            t.client_names = t.client_ids.map((id: number) => nameMap[id] || `#${id}`).join(', ');
+        }
+        res.json(result || []);
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.get('/dev/jobs/recent', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const db = getDatabase();
+        const limit = parseInt(String(req.query.limit)) || 20;
+        const jobs = db.prepare(`
+            SELECT j.id, j.local_job_id, j.file_duration, j.client_id, c.name as client_name, j.status, j.modules_requested, j.created_at
+            FROM ai_jobs j
+            LEFT JOIN clients c ON j.client_id = c.id
+            WHERE j.status IN ('completed', 'partial')
+            ORDER BY j.created_at DESC
+            LIMIT ?
+        `).all(limit);
+        res.json(jobs || []);
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.get('/dev/jobs/:id/results', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const db = getDatabase();
+        const job = db.prepare('SELECT result_data, modules_requested, local_job_id, file_duration FROM ai_jobs WHERE id = ?').get(req.params.id) as any;
+        if (!job) return res.status(404).json({ error: 'Job not found' });
+        res.json({
+            result_data: job.result_data ? JSON.parse(job.result_data) : null,
+            modules_requested: job.modules_requested ? JSON.parse(job.modules_requested) : [],
+            local_job_id: job.local_job_id,
+            file_duration: job.file_duration
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.post('/dev/templates', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const { label, module_name, duration_min, duration_max, template_data, client_ids } = req.body;
+        if (!label || !module_name || !template_data) {
+            return res.status(400).json({ error: 'label, module_name, and template_data are required' });
+        }
+        const db = getDatabase();
+        const result = db.prepare(`
+            INSERT INTO dev_templates (label, module_name, duration_min, duration_max, template_data, client_id, is_system)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        `).run(label, module_name, duration_min || 0, duration_max || 0, typeof template_data === 'string' ? template_data : JSON.stringify(template_data), null);
+        const templateId = result.lastInsertRowid;
+        const ids = Array.isArray(client_ids) ? client_ids.filter((id: any) => id) : [];
+        if (ids.length > 0) {
+            const txn = db.transaction(() => {
+                const insert = db.prepare('INSERT INTO dev_template_clients (template_id, client_id) VALUES (?, ?)');
+                for (const cid of ids) {
+                    insert.run(templateId, parseInt(cid));
+                }
+            });
+            txn();
+        }
+        res.json({ success: true, id: templateId });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.put('/dev/templates/:id', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const templateId = parseInt(String(req.params.id));
+        const db = getDatabase();
+
+        const existing = db.prepare('SELECT * FROM dev_templates WHERE id = ?').get(templateId) as any;
+        if (!existing) return res.status(404).json({ error: 'Template not found' });
+        if (existing.is_system) return res.status(400).json({ error: 'System templates cannot be modified. Create a client-specific override instead.' });
+
+        const { label, module_name, duration_min, duration_max, template_data, client_ids } = req.body;
+        const sets: string[] = ['updated_at = datetime(\'now\')'];
+        const vals: any[] = [];
+        if (label !== undefined) { sets.push('label = ?'); vals.push(label); }
+        if (module_name !== undefined) { sets.push('module_name = ?'); vals.push(module_name); }
+        if (duration_min !== undefined) { sets.push('duration_min = ?'); vals.push(duration_min); }
+        if (duration_max !== undefined) { sets.push('duration_max = ?'); vals.push(duration_max); }
+        if (template_data !== undefined) { sets.push('template_data = ?'); vals.push(typeof template_data === 'string' ? template_data : JSON.stringify(template_data)); }
+
+        if (sets.length > 1) {
+            vals.push(templateId);
+            db.prepare(`UPDATE dev_templates SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+        }
+
+        if (client_ids !== undefined) {
+            const txn = db.transaction(() => {
+                db.prepare('DELETE FROM dev_template_clients WHERE template_id = ?').run(templateId);
+                const ids = Array.isArray(client_ids) ? client_ids.filter((id: any) => id) : [];
+                if (ids.length > 0) {
+                    const insert = db.prepare('INSERT INTO dev_template_clients (template_id, client_id) VALUES (?, ?)');
+                    for (const cid of ids) {
+                        insert.run(templateId, parseInt(cid));
+                    }
+                }
+            });
+            txn();
+        }
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+mgmtRouter.delete('/dev/templates/:id', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+        const templateId = parseInt(String(req.params.id));
+        const db = getDatabase();
+        const existing = db.prepare('SELECT * FROM dev_templates WHERE id = ?').get(templateId) as any;
+        if (!existing) return res.status(404).json({ error: 'Template not found' });
+        if (existing.is_system) return res.status(400).json({ error: 'System templates cannot be deleted. Create a client-specific override instead.' });
+
+        db.prepare('DELETE FROM dev_templates WHERE id = ?').run(templateId);
+        res.json({ success: true });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }

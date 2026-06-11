@@ -31,22 +31,23 @@ import { initializeLicenseCache, getLicenseCacheStats } from './license-cache';
 import { initDatabase, getDbPath } from './sqlite';
 import { initializeDatabase } from './db-mgmt';
 import { initQueueWorker } from './ai-queue';
+import { accessLoggerMiddleware } from './utils/access-logger';
 
 const app = express();
 const port = process.env.PORT || 3001;
 
 async function checkDatabaseConnections() {
     console.log('\n=== Database Connection Status ===');
-    
+
     const results = await checkConnections();
     const status = getConnectionStatus();
-    
+
     console.log(`Server DB: ${results.server ? 'Connected' : 'NOT CONNECTED'}`);
     if (status.server.error) console.log(`  Error: ${status.server.error}`);
-    
+
     console.log(`Client DB: ${results.client ? 'Connected' : 'NOT CONNECTED'}`);
     if (status.client.error) console.log(`  Error: ${status.client.error}`);
-    
+
     if (!results.client) {
         console.log('\n⚠️  WARNING: Client database not connected!');
         console.log('   Jobs and user data will not work properly.\n');
@@ -62,38 +63,52 @@ app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 
-// Global rate limit: 100 req/min per IP
+// Trust Hostinger's reverse proxy so rate limiter and IP logging use real client IPs
+app.set('trust proxy', 1);
+
+// Access logger — logs every API request with real client IP, method, path, status, duration
+app.use(accessLoggerMiddleware);
+
+// Rate limits configurable via env vars (no rebuild needed)
 const globalLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: 100,
+    windowMs: parseInt(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS || '60000'),
+    max: parseInt(process.env.RATE_LIMIT_GLOBAL_MAX || '200'),
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests, please try again later.' }
 });
 app.use(globalLimiter);
 
-// Stricter rate limit for client-facing endpoints (40 req/min)
+// Stricter rate limit for client-facing endpoints (default: 40 req/min)
 const clientLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: 40,
+    windowMs: parseInt(process.env.RATE_LIMIT_CLIENT_WINDOW_MS || '60000'),
+    max: parseInt(process.env.RATE_LIMIT_CLIENT_MAX || '40'),
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests, please try again later.' }
 });
-app.use('/api/mgmt/clients', clientLimiter);
+// Only apply to client-facing endpoints (admin routes bypass this limit)
+app.use('/api/mgmt/clients/config', clientLimiter);
+app.use('/api/mgmt/clients/credentials', clientLimiter);
+app.use('/api/mgmt/clients/pricing', clientLimiter);
+app.use('/api/mgmt/clients/validate', clientLimiter);
+app.use('/api/mgmt/clients/heartbeat', clientLimiter);
+app.use('/api/mgmt/clients/usage', clientLimiter);
 app.use('/api/mgmt/available-models', clientLimiter);
 app.use('/api/mgmt/provider-labels', clientLimiter);
 app.use('/api/auth/token', clientLimiter);
 
 app.use('/api/auth', authRouter);
 app.use('/api/auth', authTokenRouter);
+app.use('/api/ai', aiRouter);
+app.use('/api/ai', analyzeRouter);
 app.use('/api/mgmt', mgmtRouter);
 
 app.get('/health', (req: Request, res: Response) => {
     const status = getConnectionStatus();
     const cacheStats = getLicenseCacheStats();
-    res.json({ 
-        status: 'ok', 
+    res.json({
+        status: 'ok',
         message: 'Server is running',
         database: {
             client: status.client.status,
@@ -109,7 +124,7 @@ const isDev = !process.env.NODE_ENV || process.env.NODE_ENV === 'development' ||
 if (!isDev) {
     // Serve Static Management UI in production
     app.use(express.static(path.join(__dirname, '../dist/client')));
-    
+
     // SPA Fallback for production (using *splat for Express 5 compat)
     app.get('*splat', (req: Request, res: Response) => {
         if (!req.path.startsWith('/api')) {
@@ -140,10 +155,10 @@ if (!isDev) {
 // Start Server
 app.listen(port, async () => {
     console.log(`Server running on port ${port}`);
-    
+
     // Log server startup to system logs (forces creation of today's file)
     logger.info('SYSTEM', 'BOOT', `Server started on port ${port} (v1.0.0)`);
-    
+
     // Initialize SQLite database
     console.log('[SQLite] Initializing database...');
     try {
@@ -152,7 +167,7 @@ app.listen(port, async () => {
     } catch (err: any) {
         console.error('[SQLite] Failed to initialize database:', err.message);
     }
-    
+
     await checkDatabaseConnections();
     await initializeLicenseCache();
     await initializeServerTables();

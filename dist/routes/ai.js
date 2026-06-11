@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -34,6 +67,17 @@ exports.aiRouter.post('/whisper', license_1.licenseMiddleware, upload.single('au
         if (!file) {
             logger_1.logger.warn('AI', 'WHISPER_NO_FILE', 'No audio file provided', { clientId });
             return res.status(400).json({ error: 'No audio file provided' });
+        }
+        // Dev Mode: return dummy transcription
+        const { getDatabase } = await Promise.resolve().then(() => __importStar(require('../db-mgmt')));
+        const devDb = getDatabase();
+        const devClient = devDb.prepare('SELECT dev_mode, dev_mode_delay_ms FROM clients WHERE id = ?').get(clientId);
+        if (devClient === null || devClient === void 0 ? void 0 : devClient.dev_mode) {
+            const { delay, getDevModeData } = await Promise.resolve().then(() => __importStar(require('../lib/ai/dev-mode')));
+            const duration = parseFloat(req.body.duration) || 30;
+            await delay(devClient.dev_mode_delay_ms || 5000);
+            const dummy = await getDevModeData('transcription', duration, clientId);
+            return res.json(dummy);
         }
         // Get client-specific API key
         const apiKey = await (0, db_mgmt_1.getClientApiKey)(clientId, 'openai');
@@ -149,6 +193,17 @@ exports.aiRouter.post('/openrouter', license_1.licenseMiddleware, async (req, re
             clientName,
             moduleName
         });
+        // Dev Mode: return dummy analysis
+        const { getDatabase } = await Promise.resolve().then(() => __importStar(require('../db-mgmt')));
+        const devDb = getDatabase();
+        const devClient = devDb.prepare('SELECT dev_mode, dev_mode_delay_ms FROM clients WHERE id = ?').get(clientId);
+        if (devClient === null || devClient === void 0 ? void 0 : devClient.dev_mode) {
+            const { delay, getDevModeData } = await Promise.resolve().then(() => __importStar(require('../lib/ai/dev-mode')));
+            const duration = parseFloat(req.body.duration) || 30;
+            await delay(devClient.dev_mode_delay_ms || 5000);
+            const dummy = await getDevModeData(moduleName, duration, clientId);
+            return res.json(dummy);
+        }
         // Get client-specific API key
         const apiKey = await (0, db_mgmt_1.getClientApiKey)(clientId, 'openrouter');
         if (!apiKey) {

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { logger, getLogsForDate, getAvailableLogDates, searchAllLogs, LogEntry } from '../logger';
 import { requireAdminAuth } from '../middleware/auth';
+import { getAccessLogsForDate, getAccessLogDates, AccessEntry } from '../utils/access-logger';
 
 export const logsRouter = Router();
 
@@ -129,4 +130,35 @@ logsRouter.get('/stats', (req: Request, res: Response) => {
     }
     
     res.json({ date, stats });
+});
+
+// Access log endpoints (separate from app logs)
+logsRouter.get('/access/dates', (req: Request, res: Response) => {
+    const dates = getAccessLogDates();
+    res.json({ dates });
+});
+
+logsRouter.get('/access', (req: Request, res: Response) => {
+    const date = (req.query.date as string) || new Date().toISOString().split('T')[0];
+    const ip = req.query.ip as string;
+    const blocked = req.query.blocked as string;
+    const statusFilter = req.query.status as string;
+    const limit = parseInt(req.query.limit as string) || 200;
+    const offset = parseInt(req.query.offset as string) || 0;
+
+    let entries = getAccessLogsForDate(date);
+
+    if (ip) entries = entries.filter(e => e.ip.includes(ip));
+    if (blocked !== undefined) entries = entries.filter(e => blocked === 'true' ? !!e.blocked : !e.blocked);
+    if (statusFilter) entries = entries.filter(e => String(e.statusCode) === statusFilter);
+
+    const paginated = entries.slice(offset, offset + limit);
+
+    res.json({
+        date,
+        total: entries.length,
+        limit,
+        offset,
+        entries: paginated
+    });
 });

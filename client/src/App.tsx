@@ -118,7 +118,12 @@ interface Client {
     description?: string;
     short_code?: string;
     allow_rate_card_fetch?: number;
+    allowed_ips?: string | null;
+    blocked_ips?: string | null;
     queue_paused?: number;
+    dev_mode?: number;
+    dev_mode_delay_ms?: number;
+    dev_record_billing?: number;
 }
 
 interface SummaryData {
@@ -176,6 +181,7 @@ const NAV_ITEMS = [
     { id: 'license-cache', label: 'License Cache', icon: '🗂️' },
     { id: 'smtp', label: 'SMTP Settings', icon: '📧' },
     { id: 'sync-queue', label: 'Sync Queue', icon: '🔄' },
+    { id: 'dev-mode', label: 'Dev Mode', icon: '🧪' },
     { id: 'settings', label: 'Settings', icon: '🔧' },
 ];
 
@@ -685,6 +691,7 @@ function App() {
                     {activeTab === 'license-cache' && <LicenseCacheView authFetch={authFetch} />}
                     {activeTab === 'smtp' && <SmtpSettingsView authFetch={authFetch} />}
                     {activeTab === 'sync-queue' && <SyncQueueView authFetch={authFetch} />}
+                    {activeTab === 'dev-mode' && <DevModeView authFetch={authFetch} clients={clients} />}
                 </div>
             </main>
             {showModal && <ClientModal client={editingClient} authFetch={authFetch} onClose={() => setShowModal(false)} onSave={handleSaveClient} saving={savingClient} onGenerateCredential={handleGenerateCredential} onRevokeCredential={handleRevokeCredential} />}
@@ -2492,6 +2499,9 @@ function ClientModal({ client, authFetch, onClose, onSave, saving, onGenerateCre
         provider_bal_openrouter: client?.provider_bal_openrouter || 0,
         provider_warn_threshold: client?.provider_warn_threshold || 25.0,
         allow_rate_card_fetch: client?.allow_rate_card_fetch || 0,
+        dev_mode: client?.dev_mode || 0,
+        dev_mode_delay_ms: client?.dev_mode_delay_ms || 5000,
+        dev_record_billing: client?.dev_record_billing || 0,
     });
 
     // Auto-generate short_code if empty and name is typed
@@ -2530,6 +2540,7 @@ function ClientModal({ client, authFetch, onClose, onSave, saving, onGenerateCre
     };
 
     const handleRevoke = async (credId: number) => {
+        if (!client?.id) return;
         try {
             await onRevokeCredential(credId);
             const creds = await authFetch(`/api/auth/token/credentials?clientId=${client.id}`).then(r => r.ok ? r.json() : []);
@@ -2665,6 +2676,50 @@ function ClientModal({ client, authFetch, onClose, onSave, saving, onGenerateCre
                             <option value={0}>Disabled (Hidden)</option>
                             <option value={1}>Enabled (Public)</option>
                         </select>
+                    </div>
+                    <div>
+                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
+                            Dev Mode (Dummy Data)
+                        </label>
+                        <select 
+                            value={formData.dev_mode} 
+                            onChange={(e) => setFormData({ ...formData, dev_mode: Number(e.target.value) })} 
+                            style={{ ...styles.input, backgroundColor: formData.dev_mode ? 'rgba(250, 204, 21, 0.1)' : 'rgba(10, 10, 15, 0.8)' }}
+                        >
+                            <option value={0}>Disabled</option>
+                            <option value={1}>Enabled</option>
+                        </select>
+                        {formData.dev_mode === 1 && (
+                            <>
+                                <div style={{ marginTop: '8px' }}>
+                                    <label style={{ display: 'block', fontSize: '11px', fontWeight: 500, marginBottom: '4px', color: '#9ca3af' }}>
+                                        Delay per module (ms)
+                                    </label>
+                                    <input 
+                                        type="number" 
+                                        value={formData.dev_mode_delay_ms} 
+                                        onChange={(e) => setFormData({ ...formData, dev_mode_delay_ms: parseInt(e.target.value) || 5000 })} 
+                                        style={{ ...styles.input, width: '100%' }}
+                                        min={100}
+                                        max={60000}
+                                        step={100}
+                                    />
+                                </div>
+                                <div style={{ marginTop: '8px' }}>
+                                    <label style={{ display: 'block', fontSize: '11px', fontWeight: 500, marginBottom: '4px', color: '#9ca3af' }}>
+                                        Record billing at real rates
+                                    </label>
+                                    <select 
+                                        value={formData.dev_record_billing} 
+                                        onChange={(e) => setFormData({ ...formData, dev_record_billing: Number(e.target.value) })} 
+                                        style={{ ...styles.input, width: '100%', backgroundColor: formData.dev_record_billing ? 'rgba(16, 185, 129, 0.1)' : 'rgba(10, 10, 15, 0.8)' }}
+                                    >
+                                        <option value={0}>No ($0 cost)</option>
+                                        <option value={1}>Yes (bill at client rate)</option>
+                                    </select>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
 
@@ -6144,6 +6199,509 @@ function SyncQueueView({ authFetch }: { authFetch: (url: string, options?: Reque
                     </table>
                 )}
             </div>
+        </div>
+    );
+}
+
+function DevModeView({ authFetch, clients }: { authFetch: (url: string, options?: RequestInit) => Promise<Response>, clients: Client[] }) {
+    const [templates, setTemplates] = useState<any[]>([]);
+    const [clientOverrides, setClientOverrides] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [moduleFilter, setModuleFilter] = useState('all');
+    const [scopeFilter, setScopeFilter] = useState('all');
+    const [editingTemplate, setEditingTemplate] = useState<any | null>(null);
+    const [showEditor, setShowEditor] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [editorData, setEditorData] = useState({ label: '', module: '', duration_min: 10, duration_max: 60, template_json: '{}', client_ids: [] as string[], lang: '' });
+    const [selectedClient, setSelectedClient] = useState('');
+    const [recentJobs, setRecentJobs] = useState<any[]>([]);
+    const [recentJobsLoading, setRecentJobsLoading] = useState(false);
+    const [showJobPicker, setShowJobPicker] = useState(false);
+    const [rawTranscriptText, setRawTranscriptText] = useState('');
+    const [selectedJobInfo, setSelectedJobInfo] = useState<any>(null);
+    const [selectedJobModules, setSelectedJobModules] = useState<any[]>([]);
+    const [checkedModules, setCheckedModules] = useState<Record<string, boolean>>({});
+    const [importingModules, setImportingModules] = useState(false);
+    const [importFeedback, setImportFeedback] = useState('');
+
+    const loadTemplates = async () => {
+        setLoading(true);
+        try {
+            const params = new URLSearchParams();
+            if (moduleFilter !== 'all') params.set('module', moduleFilter);
+            if (selectedClient) params.set('clientId', selectedClient);
+            const res = await authFetch(`/api/mgmt/dev/templates?${params}`);
+            if (res.ok) {
+                const data = await res.json();
+                setTemplates(data || []);
+            }
+            const res2 = await authFetch('/api/mgmt/dev/templates/clients');
+            if (res2.ok) {
+                const data = await res2.json();
+                setClientOverrides(data || []);
+            }
+        } catch (e) {
+            setError('Failed to load templates');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => { loadTemplates(); }, [moduleFilter, selectedClient]);
+
+    const devModeClients = clients.filter(c => c.dev_mode === 1);
+    const displayedTemplates = scopeFilter === 'client' ? clientOverrides : templates;
+
+    const openNewEditor = () => {
+        setEditingTemplate(null);
+        setEditorData({ label: '', module: 'transcription', duration_min: 10, duration_max: 60, template_json: '{}', client_ids: [], lang: '' });
+        setShowEditor(true);
+    };
+
+    const openEditEditor = (tpl: any) => {
+        setEditingTemplate(tpl);
+        const rawJson = tpl.template_data || tpl.template_json;
+        const moduleFull = tpl.module_name || tpl.module || 'transcription';
+        const isSubtitleLang = moduleFull.startsWith('subtitle_translation_');
+        const baseModule = isSubtitleLang ? 'subtitle_translation' : moduleFull;
+        const extractedLang = isSubtitleLang ? moduleFull.replace('subtitle_translation_', '') : '';
+        setEditorData({
+            label: tpl.label || '',
+            module: baseModule,
+            duration_min: tpl.duration_min || 10,
+            duration_max: tpl.duration_max || 60,
+            template_json: typeof rawJson === 'object' ? JSON.stringify(rawJson, null, 2) : (rawJson || '{}'),
+            client_ids: (tpl.client_ids || []).map(String),
+            lang: extractedLang,
+        });
+        setShowEditor(true);
+    };
+
+    const handleSave = async () => {
+        setSaving(true);
+        try {
+            let parsed;
+            try { parsed = JSON.parse(editorData.template_json); } catch { setError('Invalid JSON in template_json'); setSaving(false); return; }
+            const moduleName = editorData.module === 'subtitle_translation' && editorData.lang
+                ? `subtitle_translation_${editorData.lang}`
+                : editorData.module;
+            const body: any = {
+                label: editorData.label,
+                module_name: moduleName,
+                duration_min: editorData.duration_min,
+                duration_max: editorData.duration_max,
+                template_data: typeof parsed === 'string' ? parsed : JSON.stringify(parsed),
+            };
+            if (editorData.client_ids.length > 0) body.client_ids = editorData.client_ids;
+
+            let res;
+            if (editingTemplate) {
+                res = await authFetch(`/api/mgmt/dev/templates/${editingTemplate.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+            } else {
+                res = await authFetch('/api/mgmt/dev/templates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+            }
+            if (res.ok) {
+                setShowEditor(false);
+                loadTemplates();
+            } else {
+                const err = await res.json();
+                setError(err.error || 'Failed to save template');
+            }
+        } catch (e) {
+            setError('Failed to save template');
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleDelete = async (id: number) => {
+        if (!confirm('Delete this template?')) return;
+        try {
+            const res = await authFetch(`/api/mgmt/dev/templates/${id}`, { method: 'DELETE' });
+            if (res.ok) loadTemplates();
+            else setError('Failed to delete template');
+        } catch { setError('Failed to delete template'); }
+    };
+
+    const loadRecentJobs = async () => {
+        setRecentJobsLoading(true);
+        try {
+            const res = await authFetch('/api/mgmt/dev/jobs/recent?limit=30');
+            if (res.ok) setRecentJobs(await res.json());
+        } catch { setError('Failed to load recent jobs'); }
+        finally { setRecentJobsLoading(false); }
+    };
+
+    const handleJobPick = async (jobId: string) => {
+        try {
+            const res = await authFetch(`/api/mgmt/dev/jobs/${jobId}/results`);
+            if (res.ok) {
+                const data = await res.json();
+                const results = data.result_data || [];
+                const moduleMap = new Map<string, { name: string; data: any }>();
+                results.forEach((r: any) => {
+                    const baseName = r.module_name || r.moduleName || '?';
+                    const suffix = r.result_type && r.result_type !== baseName ? ` (${r.result_type})` : '';
+                    const key = baseName + suffix;
+                    if (!moduleMap.has(key)) {
+                        moduleMap.set(key, { name: key, data: r.result_data || r.resultData || r.content });
+                    }
+                });
+                const modules = Array.from(moduleMap.values());
+                setSelectedJobInfo({ id: jobId, localId: data.local_job_id || jobId, fileDuration: data.file_duration || 0 });
+                setSelectedJobModules(modules);
+                const allChecked: Record<string, boolean> = {};
+                modules.forEach((m: any) => { allChecked[m.name] = true; });
+                setCheckedModules(allChecked);
+            }
+        } catch (e) { console.error('handleJobPick error:', e); setError('Failed to load job results'); }
+    };
+
+    const importSelectedModules = async () => {
+        const selected = Object.entries(checkedModules).filter(([, v]) => v).map(([k]) => k);
+        if (selected.length === 0) { setImportFeedback('No modules selected'); return; }
+        setImportingModules(true);
+        setImportFeedback('');
+        let count = 0;
+        let errors: string[] = [];
+        try {
+            for (const moduleName of selected) {
+                const mod = selectedJobModules.find(m => m.name === moduleName);
+                if (!mod) continue;
+                const parsedData = (() => { try { return JSON.parse(mod.data); } catch { return mod.data; } })();
+                const label = selectedJobInfo.localId
+                    ? `Job ${selectedJobInfo.localId} - ${moduleName}`
+                    : `Job ${selectedJobInfo.id} - ${moduleName}`;
+                const baseModule = moduleName.includes(' (') ? moduleName.split(' (')[0] : moduleName;
+                const duration = selectedJobInfo?.fileDuration || 0;
+                const res = await authFetch('/api/mgmt/dev/templates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ label, module_name: baseModule, duration_min: 0, duration_max: duration, template_data: typeof parsedData === 'string' ? parsedData : JSON.stringify(parsedData) }),
+                });
+                if (res.ok) count++;
+                else errors.push(moduleName);
+            }
+            if (count > 0) {
+                setImportFeedback(`Created ${count} template${count > 1 ? 's' : ''}`);
+                setTimeout(() => {
+                    setShowJobPicker(false);
+                    setSelectedJobInfo(null);
+                    setSelectedJobModules([]);
+                    loadTemplates();
+                }, 1200);
+            }
+            if (errors.length > 0) setImportFeedback(`Created ${count}, failed: ${errors.join(', ')}`);
+        } catch (e) { console.error('importSelectedModules error:', e); setImportFeedback('Error creating templates'); }
+        finally { setImportingModules(false); }
+    };
+
+    const handleTranscriptToJson = () => {
+        if (!rawTranscriptText.trim()) return;
+        const text = rawTranscriptText.trim();
+        const words = text.split(/\s+/).filter(w => w.length > 0);
+        const wordsPerSegment = Math.max(5, Math.ceil(words.length / 4));
+        const segments: any[] = [];
+        for (let i = 0; i < words.length; i += wordsPerSegment) {
+            const chunk = words.slice(i, i + wordsPerSegment).join(' ');
+            const start = Math.round((i / words.length) * 30 * 100) / 100;
+            const end = Math.round(((i + wordsPerSegment) / words.length) * 30 * 100) / 100;
+            segments.push({ id: segments.length, start, end, text: chunk });
+        }
+        const json = {
+            text,
+            segments,
+            language: 'en',
+            duration: 30,
+            cost: 0,
+            requestId: `dummy_whisper_${Date.now()}`
+        };
+        setEditorData({ ...editorData, template_json: JSON.stringify(json, null, 2) });
+        setRawTranscriptText('');
+    };
+
+    const MODULES = ['transcription', 'subtitles', 'metadata', 'ad_breaks', 'promo_breaks', 'framegrab_image', 'subtitle_translation'];
+
+    const styles_dev = {
+        container: { padding: '24px' },
+        card: { backgroundColor: 'rgba(20, 20, 35, 0.8)', borderRadius: '8px', padding: '16px', border: '1px solid rgba(255,255,255,0.08)' },
+        badge: { padding: '4px 10px', borderRadius: '4px', fontSize: '12px', fontWeight: 600 },
+        btn: { padding: '8px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 600 },
+        table: { width: '100%', borderCollapse: 'collapse' as const, fontSize: '13px' },
+        th: { textAlign: 'left' as const, padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)', color: '#9ca3af', fontSize: '11px', textTransform: 'uppercase' as const, fontWeight: 600 },
+        td: { padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.04)' },
+        input: { backgroundColor: 'rgba(10, 10, 15, 0.8)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', padding: '10px 12px', color: '#e5e7eb', fontSize: '13px', width: '100%', outline: 'none' },
+        label: { display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' },
+        modalOverlay: { position: 'fixed' as const, top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+        modalContent: { backgroundColor: '#1f2937', borderRadius: '12px', padding: '24px', width: '600px', maxWidth: '90vw', maxHeight: '80vh', overflowY: 'auto' as const },
+        select: { backgroundColor: 'rgba(10, 10, 15, 0.8)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', padding: '10px 12px', color: '#e5e7eb', fontSize: '13px', width: '100%', outline: 'none' },
+    };
+
+    return (
+        <div style={styles_dev.container}>
+            {error && <div style={{ color: '#ef4444', marginBottom: '12px', fontSize: '13px' }}>{error}</div>}
+
+            <div style={{ display: 'flex', gap: '16px', marginBottom: '24px' }}>
+                <div style={styles_dev.card}>
+                    <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>Dev Mode Clients</div>
+                    <div style={{ fontSize: '28px', fontWeight: 700 }}>{devModeClients.length}</div>
+                </div>
+                <div style={styles_dev.card}>
+                    <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>Total Templates</div>
+                    <div style={{ fontSize: '28px', fontWeight: 700 }}>{templates.length}</div>
+                </div>
+                <div style={styles_dev.card}>
+                    <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>Client Overrides</div>
+                    <div style={{ fontSize: '28px', fontWeight: 700 }}>{clientOverrides.length}</div>
+                </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <select value={moduleFilter} onChange={e => setModuleFilter(e.target.value)} style={styles_dev.select as any}>
+                        <option value="all">All Modules</option>
+                        {MODULES.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <select value={scopeFilter} onChange={e => setScopeFilter(e.target.value)} style={styles_dev.select as any}>
+                        <option value="all">Global Templates</option>
+                        <option value="client">Client Overrides</option>
+                    </select>
+                    {scopeFilter === 'client' && (
+                        <select value={selectedClient} onChange={e => setSelectedClient(e.target.value)} style={styles_dev.select as any}>
+                            <option value="">All Clients</option>
+                            {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                    )}
+                </div>
+                <button onClick={openNewEditor} style={{ ...styles_dev.btn, backgroundColor: '#fbbf24', color: '#1f2937' }}>
+                    + New Template
+                </button>
+            </div>
+
+            {loading && <div style={{ color: '#9ca3af', fontSize: '14px' }}>Loading templates...</div>}
+            {!loading && (
+                <table style={styles_dev.table}>
+                    <thead>
+                        <tr>
+                            <th style={styles_dev.th}>Label</th>
+                            <th style={styles_dev.th}>Module</th>
+                            <th style={styles_dev.th}>Duration</th>
+                            <th style={styles_dev.th}>Client</th>
+                            <th style={styles_dev.th}>System</th>
+                            <th style={styles_dev.th}>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {displayedTemplates.map((tpl: any) => (
+                            <tr key={tpl.id || tpl.label}>
+                                <td style={styles_dev.td}>{tpl.label}</td>
+                                <td style={styles_dev.td}>
+                                    <span style={{ ...styles_dev.badge, backgroundColor: 'rgba(59,130,246,0.2)', color: '#60a5fa' }}>{(tpl.module_name || tpl.module).replace('subtitle_translation_', 'subtitle_translation (') + ((tpl.module_name || tpl.module).startsWith('subtitle_translation_') ? ')' : '')}</span>
+                                </td>
+                                <td style={styles_dev.td}>{tpl.duration_min}s - {tpl.duration_max}s</td>
+                                <td style={styles_dev.td}>
+                                    {tpl.client_ids?.length > 0
+                                        ? <span style={{ ...styles_dev.badge, backgroundColor: 'rgba(16,185,129,0.15)', color: '#34d399' }}>{tpl.client_names || tpl.client_ids.join(', ')}</span>
+                                        : <span style={{ ...styles_dev.badge, backgroundColor: 'rgba(107,114,128,0.2)', color: '#9ca3af' }}>Global</span>
+                                    }
+                                </td>
+                                <td style={styles_dev.td}>
+                                    {tpl.is_system ? (
+                                        <span style={{ ...styles_dev.badge, backgroundColor: 'rgba(107,114,128,0.2)', color: '#9ca3af' }}>System</span>
+                                    ) : (
+                                        <span style={{ ...styles_dev.badge, backgroundColor: 'rgba(16,185,129,0.2)', color: '#34d399' }}>Custom</span>
+                                    )}
+                                </td>
+                                <td style={styles_dev.td}>
+                                    <div style={{ display: 'flex', gap: '6px' }}>
+                                        <button onClick={() => openEditEditor(tpl)} style={{ background: 'none', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '4px', color: '#9ca3af', cursor: 'pointer', padding: '4px 8px', fontSize: '12px' }}>
+                                            Edit
+                                        </button>
+                                        {!tpl.is_system && (
+                                            <button onClick={() => handleDelete(tpl.id)} style={{ background: 'none', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '4px', color: '#ef4444', cursor: 'pointer', padding: '4px 8px', fontSize: '12px' }}>
+                                                Delete
+                                            </button>
+                                        )}
+                                    </div>
+                                </td>
+                            </tr>
+                        ))}
+                        {displayedTemplates.length === 0 && (
+                            <tr>
+                                <td colSpan={6} style={{ ...styles_dev.td, textAlign: 'center', color: '#6b7280', padding: '32px' }}>
+                                    No templates found
+                                </td>
+                            </tr>
+                        )}
+                    </tbody>
+                </table>
+            )}
+
+            {showEditor && (
+                <div style={styles_dev.modalOverlay} onClick={() => setShowEditor(false)}>
+                    <div style={styles_dev.modalContent} onClick={e => e.stopPropagation()}>
+                        <h3 style={{ margin: '0 0 16px', fontSize: '18px' }}>{editingTemplate ? 'Edit Template' : 'New Template'}</h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            <div>
+                                <label style={styles_dev.label}>Label</label>
+                                <input style={styles_dev.input} value={editorData.label} onChange={e => setEditorData({ ...editorData, label: e.target.value })} placeholder="e.g. 30-second news promo" />
+                            </div>
+                            <div>
+                                <label style={styles_dev.label}>Module</label>
+                                <select style={styles_dev.select} value={editorData.module} onChange={e => setEditorData({ ...editorData, module: e.target.value, lang: '' })}>
+                                    {MODULES.map(m => <option key={m} value={m}>{m}</option>)}
+                                </select>
+                            </div>
+                            {editorData.module === 'subtitle_translation' && (
+                                <div>
+                                    <label style={styles_dev.label}>Target Language</label>
+                                    <select style={styles_dev.select} value={editorData.lang} onChange={e => setEditorData({ ...editorData, lang: e.target.value })}>
+                                        <option value="">Select language...</option>
+                                        <option value="ko">Korean (ko)</option>
+                                        <option value="zh">Chinese (zh)</option>
+                                        <option value="en">English (en)</option>
+                                    </select>
+                                </div>
+                            )}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                                <div>
+                                    <label style={styles_dev.label}>Min Duration (s)</label>
+                                    <input type="number" style={styles_dev.input} value={editorData.duration_min} onChange={e => setEditorData({ ...editorData, duration_min: parseInt(e.target.value) || 10 })} />
+                                </div>
+                                <div>
+                                    <label style={styles_dev.label}>Max Duration (s)</label>
+                                    <input type="number" style={styles_dev.input} value={editorData.duration_max} onChange={e => setEditorData({ ...editorData, duration_max: parseInt(e.target.value) || 60 })} />
+                                </div>
+                            </div>
+                            <div>
+                                <label style={styles_dev.label}>Clients (leave empty for global)</label>
+                                <div style={{ maxHeight: '160px', overflowY: 'auto', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', padding: '8px' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', cursor: 'pointer', fontSize: '13px' }}>
+                                        <input type="checkbox" checked={editorData.client_ids.length === 0} onChange={() => setEditorData({ ...editorData, client_ids: [] })} style={{ accentColor: '#3b82f6' }} />
+                                        <span style={{ color: editorData.client_ids.length === 0 ? '#fbbf24' : '#9ca3af', fontWeight: editorData.client_ids.length === 0 ? 600 : 400 }}>Global (all clients)</span>
+                                    </label>
+                                    {clients.map(c => {
+                                        const checked = editorData.client_ids.includes(String(c.id));
+                                        return (
+                                            <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', cursor: 'pointer', fontSize: '13px' }}>
+                                                <input type="checkbox" checked={checked} onChange={() => {
+                                                    const next = checked
+                                                        ? editorData.client_ids.filter(id => id !== String(c.id))
+                                                        : [...editorData.client_ids, String(c.id)];
+                                                    setEditorData({ ...editorData, client_ids: next });
+                                                }} style={{ accentColor: '#3b82f6' }} />
+                                                <span style={{ color: checked ? '#e5e7eb' : '#9ca3af' }}>{c.name}</span>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                            {editorData.module === 'transcription' && (
+                                <div>
+                                    <label style={styles_dev.label}>Or paste raw transcript text (auto-generate JSON)</label>
+                                    <textarea style={{ ...styles_dev.input, minHeight: '80px', fontSize: '13px' }} value={rawTranscriptText} onChange={e => setRawTranscriptText(e.target.value)} placeholder="Paste dialogue text here... e.g. 'This might be it, right? I mean, this could be it...'" />
+                                    <button onClick={handleTranscriptToJson} disabled={!rawTranscriptText.trim()} style={{ ...styles_dev.btn, backgroundColor: 'rgba(59,130,246,0.2)', color: '#60a5fa', marginTop: '6px', width: '100%', opacity: rawTranscriptText.trim() ? 1 : 0.5 }}>
+                                        Generate JSON from text
+                                    </button>
+                                </div>
+                            )}
+                            <div>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                                    <label style={styles_dev.label}>Template JSON (dummy data)</label>
+                                    <button onClick={() => { loadRecentJobs(); setShowJobPicker(true); }} style={{ background: 'none', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '4px', color: '#9ca3af', cursor: 'pointer', padding: '4px 8px', fontSize: '11px' }}>
+                                        Load from Job
+                                    </button>
+                                </div>
+                                <textarea style={{ ...styles_dev.input, minHeight: '160px', fontFamily: 'monospace', fontSize: '12px' }} value={editorData.template_json} onChange={e => setEditorData({ ...editorData, template_json: e.target.value })} />
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
+                            <button onClick={() => setShowEditor(false)} style={{ ...styles_dev.btn, backgroundColor: 'transparent', border: '1px solid rgba(255,255,255,0.15)', color: '#9ca3af' }}>
+                                Cancel
+                            </button>
+                            <button onClick={handleSave} disabled={saving} style={{ ...styles_dev.btn, backgroundColor: '#fbbf24', color: '#1f2937', opacity: saving ? 0.6 : 1 }}>
+                                {saving ? 'Saving...' : 'Save'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showJobPicker && (
+                <div style={styles_dev.modalOverlay} onClick={() => { setShowJobPicker(false); setSelectedJobInfo(null); setSelectedJobModules([]); }}>
+                    <div style={{ ...styles_dev.modalContent, width: '520px' }} onClick={e => e.stopPropagation()}>
+                        {!selectedJobInfo ? (
+                            <>
+                                <h3 style={{ margin: '0 0 16px', fontSize: '16px' }}>Select a completed job</h3>
+                                {recentJobsLoading && <div style={{ color: '#9ca3af', fontSize: '13px' }}>Loading jobs...</div>}
+                                {!recentJobsLoading && (
+                                    <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                                        {recentJobs.length === 0 && <div style={{ color: '#6b7280', fontSize: '13px', padding: '16px', textAlign: 'center' }}>No completed jobs found</div>}
+                                        {recentJobs.map((job: any) => {
+                                            const modules = (() => { try { return JSON.parse(job.modules_requested); } catch { return []; } })();
+                                            const dur = job.file_duration ? (job.file_duration >= 60 ? `${Math.floor(job.file_duration / 60)}m ${Math.round(job.file_duration % 60)}s` : `${Math.round(job.file_duration)}s`) : '';
+                                            return (
+                                                <div key={job.id} onClick={() => handleJobPick(job.id)} style={{ padding: '10px 12px', cursor: 'pointer', borderRadius: '6px', marginBottom: '4px', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                        <span style={{ fontSize: '13px', color: '#60a5fa', fontWeight: 600 }}>{job.local_job_id || job.id}</span>
+                                                        {dur && <span style={{ fontSize: '11px', color: '#9ca3af' }}>({dur})</span>}
+                                                    </div>
+                                                    <div style={{ fontSize: '10px', color: '#6b7280', marginTop: '1px' }}>{job.id}</div>
+                                                    <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                                                        <span>{job.client_name}</span>
+                                                        <span>&middot;</span>
+                                                        {modules.map((m: string) => (
+                                                            <span key={m} style={{ padding: '1px 6px', borderRadius: '3px', backgroundColor: 'rgba(59,130,246,0.15)', color: '#93c5fd', fontSize: '10px' }}>{m}</span>
+                                                        ))}
+                                                        <span>&middot;</span>
+                                                        <span>{new Date(job.created_at).toLocaleDateString()}</span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </>
+                        ) : (
+                            <>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                                    <button onClick={() => { setSelectedJobInfo(null); setSelectedJobModules([]); }} style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '16px', padding: '0' }}>&larr;</button>
+                                    <h3 style={{ margin: 0, fontSize: '16px' }}>Import from {selectedJobInfo.localId}</h3>
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>Select modules to create templates:</div>
+                                {selectedJobModules.map(mod => (
+                                    <label key={mod.name} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', borderRadius: '6px', cursor: 'pointer', backgroundColor: checkedModules[mod.name] ? 'rgba(59,130,246,0.08)' : 'transparent', marginBottom: '4px' }}>
+                                        <input type="checkbox" checked={!!checkedModules[mod.name]} onChange={e => setCheckedModules(prev => ({ ...prev, [mod.name]: e.target.checked }))} style={{ accentColor: '#3b82f6' }} />
+                                        <span style={{ fontSize: '13px', color: '#e5e7eb', fontWeight: 500 }}>{mod.name}</span>
+                                    </label>
+                                ))}
+                                {importFeedback && (
+                                    <div style={{ padding: '10px', borderRadius: '6px', backgroundColor: importFeedback.includes('Created') ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', color: importFeedback.includes('Created') ? '#34d399' : '#ef4444', fontSize: '13px', textAlign: 'center', marginTop: '8px' }}>
+                                        {importFeedback}
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
+                                    <button onClick={() => { setShowJobPicker(false); setSelectedJobInfo(null); setSelectedJobModules([]); setImportFeedback(''); }} style={{ ...styles_dev.btn, backgroundColor: 'transparent', border: '1px solid rgba(255,255,255,0.15)', color: '#9ca3af' }}>
+                                        Cancel
+                                    </button>
+                                    <button onClick={importSelectedModules} disabled={importingModules} style={{ ...styles_dev.btn, backgroundColor: '#3b82f6', color: '#fff', opacity: importingModules ? 0.6 : 1 }}>
+                                        {importingModules ? 'Importing...' : `Import Selected (${Object.values(checkedModules).filter(Boolean).length})`}
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
