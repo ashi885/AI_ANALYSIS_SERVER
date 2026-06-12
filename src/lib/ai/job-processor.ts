@@ -13,7 +13,7 @@ import { logger } from '../../logger';
 import { devLogger } from './dev-logger';
 
 // Job Processor logic
-export async function processAiJob(jobId: string, audioPath: string, modulesRequested: string[], clientId: number, clientName: string, durationRequested: number | null = null, targetLanguages?: string[], abortSignal?: AbortSignal) {
+export async function processAiJob(jobId: string, audioPath: string, modulesRequested: string[], clientId: number, clientName: string, durationRequested: number | null = null, targetLanguages?: string[], abortSignal?: AbortSignal, sourceSegments?: { start: number; end: number; text: string }[], sourceLanguage?: string) {
     const db = getDatabase();
     let totalCost = 0;
     let billedTotalCost = 0;
@@ -335,8 +335,35 @@ export async function processAiJob(jobId: string, audioPath: string, modulesRequ
 
         // Get transcription text for other modules
         if (!transcriptionResult && modulesRequested.some((m: string) => m !== 'transcription')) {
+            // Priority 0: Use provided sourceSegments (translation-only mode)
+            if (sourceSegments && sourceSegments.length > 0) {
+                const text = sourceSegments.map(s => s.text).join(' ');
+                transcriptionResult = {
+                    text,
+                    segments: sourceSegments,
+                    language: sourceLanguage || 'en',
+                    duration: sourceSegments[sourceSegments.length - 1]?.end || 0,
+                    srt: formatAsSRT(sourceSegments),
+                    vtt: formatAsVTT(sourceSegments)
+                };
+                resultData.push({
+                    moduleName: 'transcription',
+                    module_name: 'transcription',
+                    resultData: transcriptionResult,
+                    result_data: transcriptionResult,
+                    processingTimeMs: 0,
+                    processing_time_ms: 0,
+                    apiCost: 0,
+                    api_cost: 0,
+                    providerCost: 0,
+                    provider_cost: 0,
+                    reused: true
+                });
+                successfulModules.push('transcription');
+                logger.info('AI', 'TRANSLATION_ONLY', `Using provided source segments for job ${jobId} (${sourceSegments.length} segments, language: ${sourceLanguage || 'en'})`);
+            }
             // Priority 1: Check existing results within the current job 
-            if (existingResultsMap['transcription']) {
+            else if (existingResultsMap['transcription']) {
                 transcriptionResult = existingResultsMap['transcription'];
             } 
             // Priority 2: Fallback - Check siblings (other jobs for the same asset)

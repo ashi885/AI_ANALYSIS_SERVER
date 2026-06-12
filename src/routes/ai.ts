@@ -407,6 +407,65 @@ aiRouter.post('/job', licenseMiddleware, upload.single('audio'), async (req: Lic
     }
 });
 
+// Translation-only endpoint (no audio file needed — uses provided source segments)
+aiRouter.post('/translate', licenseMiddleware, async (req: LicensedRequest, res: Response) => {
+    const clientId = req.client?.id;
+    const clientName = req.client?.name;
+
+    try {
+        const { local_job_id, user_id, source_segments, target_languages, source_language } = req.body;
+
+        if (!local_job_id) {
+            return res.status(400).json({ error: 'local_job_id is required' });
+        }
+        if (!source_segments || !Array.isArray(source_segments) || source_segments.length === 0) {
+            return res.status(400).json({ error: 'source_segments array is required' });
+        }
+        if (!target_languages || !Array.isArray(target_languages) || target_languages.length === 0) {
+            return res.status(400).json({ error: 'target_languages array is required' });
+        }
+
+        const jobId = crypto.randomUUID();
+        const db = getDatabase();
+
+        const modulesRequested = ['subtitle_translation'];
+        const duration = source_segments[source_segments.length - 1]?.end || 0;
+
+        // ── CREDIT SYSTEM CHECK ──
+        const clientInfo = await getClientById(clientId!);
+        const billingType = clientInfo?.billing_type || 'PER_REQUEST';
+        if (billingType === 'CREDIT') {
+            const pricing = await getModulePricing(clientId!, 'subtitle_translation', duration);
+            const estimatedCost = pricing?.cost_per_job || 0;
+            if ((clientInfo?.credits || 0) < estimatedCost) {
+                return res.status(402).json({
+                    error: 'Insufficient credits. Please top up your account.',
+                    balance: clientInfo?.credits || 0,
+                    required: estimatedCost
+                });
+            }
+        }
+
+        // Insert job with a placeholder audio_path (no audio needed for translation-only)
+        db.prepare(`
+            INSERT INTO ai_jobs (id, client_id, user_id, local_job_id, status, modules_requested, target_languages, audio_path, file_duration, queue_status, priority)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)
+        `).run(jobId, clientId, user_id ? parseInt(user_id, 10) : null, local_job_id, 'processing', JSON.stringify(modulesRequested), JSON.stringify(target_languages), '', duration);
+
+        // Process synchronously (translation is fast enough)
+        processAiJob(jobId, '', modulesRequested, clientId!, clientName!, duration, target_languages, undefined, source_segments, source_language || 'en')
+            .catch((err: any) => {
+                logger.error('AI', 'TRANSLATE_ERROR', `Translation job ${jobId} failed: ${err.message}`);
+            });
+
+        return res.json({ jobId, status: 'processing' });
+
+    } catch (error: any) {
+        logger.error('AI', 'TRANSLATE_SUBMIT_ERROR', `Failed to submit translation job: ${error.message}`, error.stack, { clientId });
+        return res.status(500).json({ error: error.message });
+    }
+});
+
 // Get job status
 aiRouter.get('/job/:id', licenseMiddleware, async (req: LicensedRequest, res: Response) => {
     const clientId = req.client?.id;
@@ -452,6 +511,81 @@ aiRouter.get('/job/:id', licenseMiddleware, async (req: LicensedRequest, res: Re
         });
     } catch (error: any) {
         logger.error('AI', 'JOB_STATUS_ERROR', `Failed to get job status: ${error.message}`, error.stack, { clientId, jobId });
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+// Retranslate changed segments for a specific language
+aiRouter.post('/retranslate', licenseMiddleware, async (req: LicensedRequest, res: Response) => {
+    const clientId = req.client?.id;
+    const clientName = req.client?.name;
+
+    try {
+        const { local_job_id, language, changed_segments, existing_translated_segments } = req.body;
+
+        if (!local_job_id || !language || !changed_segments || !Array.isArray(changed_segments) || changed_segments.length === 0) {
+            return res.status(400).json({ error: 'local_job_id, language, and changed_segments (non-empty array) are required' });
+        }
+
+        const db = getDatabase();
+        const orClient = new OpenRouterClient({ apiKey: await getClientApiKey(clientId!, 'openrouter') });
+        const models = await getClientModels(clientId!);
+        const model = models.find((m: any) => m.module_name === 'subtitle_translation')?.api_model || await (await import('../db-mgmt')).getGlobalDefaultModel();
+
+        // Build a compact representation of changed segments for translation
+        const changedText = changed_segments.map((s: any, i: number) =>
+            `[${s.start.toFixed(2)} - ${s.end.toFixed(2)}] ${s.text}`
+        ).join('\n');
+
+        const systemPrompt = `You are a professional subtitle translator. Translate the following subtitle segments from English to ${language}. Keep translations concise (max 50 chars per segment). Return ONLY valid JSON in this format: {"segments":[{"text":"translated text"}]} — one entry per input segment in the same order.`;
+
+        const startTime = Date.now();
+        const result = await orClient.completeWithRetry({
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: changedText }
+            ],
+            model: model!, temperature: 0.7, maxTokens: 4096
+        });
+
+        let translatedData: any;
+        try {
+            translatedData = JSON.parse(result.content || '{}');
+        } catch {
+            const match = result.content?.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+            translatedData = JSON.parse(match ? match[1] : '{}');
+        }
+
+        const translatedSegments = translatedData?.segments || [];
+        const mergedSegments = [...(existing_translated_segments || [])];
+
+        // Replace changed segments with new translations by matching start time
+        for (let i = 0; i < changed_segments.length && i < translatedSegments.length; i++) {
+            const changed = changed_segments[i];
+            const translated = translatedSegments[i];
+            const idx = mergedSegments.findIndex((s: any) =>
+                Math.abs(s.start - changed.start) < 0.1 && Math.abs(s.end - changed.end) < 0.1
+            );
+            if (idx !== -1) {
+                mergedSegments[idx] = { ...mergedSegments[idx], text: translated.text || translated.text || '' };
+            }
+        }
+
+        const { formatAsSRT, formatAsVTT } = await import('../lib/ai/job-processor');
+        const srt = formatAsSRT ? formatAsSRT(mergedSegments) : '';
+        const vtt = formatAsVTT ? formatAsVTT(mergedSegments) : '';
+
+        return res.json({
+            language,
+            merged_segments: mergedSegments,
+            srt,
+            vtt,
+            changed_count: changed_segments.length,
+            latency_ms: Date.now() - startTime
+        });
+
+    } catch (error: any) {
+        logger.error('AI', 'RETRANSLATE_ERROR', `Retranslate failed: ${error.message}`, error.stack, { clientId });
         return res.status(500).json({ error: error.message });
     }
 });
